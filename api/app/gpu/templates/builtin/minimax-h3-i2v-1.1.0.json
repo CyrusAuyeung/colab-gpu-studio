@@ -1,0 +1,1357 @@
+{
+  "workflow_key": "minimax-h3-i2v",
+  "model_id": "minimax-h3",
+  "model": {
+    "model_id": "minimax-h3",
+    "display_name": "MiniMax H3 图生视频（带声音）",
+    "revision": "54472221d27c695fca9621b0c3ed52f06c4af707",
+    "source": "https://huggingface.co/Comfy-Org/MiniMax-H3",
+    "license": "minimax-h3-community-license-agreement",
+    "modality": "video",
+    "resource_profile": {
+      "disk_gb": 44,
+      "weights_gb": 40.1,
+      "min_vram_gb": 24,
+      "min_ram_gb": 40
+    },
+    "variants": [
+      "H3 FL2VA int8_convrot + qwen3vl-32b nvfp4 编码器 + Lightning 8 步 LoRA（L4）"
+    ]
+  },
+  "manifest": {
+    "workflow_key": "minimax-h3-i2v",
+    "model_id": "minimax-h3",
+    "version": "1.1.0",
+    "title": "MiniMax H3 图生视频（带声音）",
+    "description": "以一张首帧图（可加尾帧图）生成带原生音频的短视频。8 步 Lightning LoRA；固定在 Colab L4 上运行。",
+    "modality": "video",
+    "executor": "comfyui",
+    "compute_spec": {
+      "variant": "VARIANT_GPU",
+      "accelerator": "L4",
+      "shape": "SHAPE_STANDARD"
+    },
+    "max_runtime_minutes": 45,
+    "parameters": {
+      "first_frame": {
+        "type": "image",
+        "label": "首帧图",
+        "description": "会被拉伸到所选画面比例，请先裁成同样的比例。",
+        "binding": {
+          "node": "1",
+          "input": "image"
+        },
+        "required": true
+      },
+      "last_frame": {
+        "type": "image",
+        "label": "尾帧图",
+        "description": "可选。模型会让视频收尾在这张图上（居中裁切到画面比例）。",
+        "binding": {
+          "node": "2",
+          "input": "image"
+        },
+        "required": false
+      },
+      "prompt": {
+        "type": "string",
+        "label": "提示词",
+        "description": "描述镜头、动作和声音（Audio:）。",
+        "binding": {
+          "node": "20",
+          "input": "prompt"
+        },
+        "required": true,
+        "default": "Animate the reference image with gentle natural motion."
+      },
+      "width": {
+        "type": "integer",
+        "label": "宽",
+        "description": "必须是 32 的倍数。",
+        "binding": {
+          "node": "20",
+          "input": "width"
+        },
+        "default": 480,
+        "min": 256,
+        "max": 1088,
+        "step": 32
+      },
+      "height": {
+        "type": "integer",
+        "label": "高",
+        "description": "必须是 32 的倍数。",
+        "binding": {
+          "node": "20",
+          "input": "height"
+        },
+        "default": 864,
+        "min": 256,
+        "max": 1088,
+        "step": 32
+      },
+      "length": {
+        "type": "integer",
+        "label": "帧数（24 帧/秒）",
+        "description": "124 帧约 5 秒；会向上取到 17k+5。",
+        "binding": {
+          "node": "20",
+          "input": "length"
+        },
+        "default": 124,
+        "min": 22,
+        "max": 244,
+        "step": 17
+      },
+      "seed": {
+        "type": "integer",
+        "label": "随机种子",
+        "description": "-1 表示每次随机。",
+        "binding": {
+          "node": "23",
+          "input": "noise_seed"
+        },
+        "default": -1,
+        "min": 0,
+        "max": 4294967295,
+        "advanced": true
+      },
+      "steps": {
+        "type": "integer",
+        "label": "步数",
+        "description": "Lightning LoRA 针对 8 步调校。",
+        "binding": {
+          "node": "22",
+          "input": "steps"
+        },
+        "default": 8,
+        "min": 4,
+        "max": 12,
+        "advanced": true
+      }
+    },
+    "dependencies": {
+      "comfyui_commit": "423cbd20511becb1f16122ab518e92e58bfa03d9",
+      "custom_nodes": [],
+      "weight_files": [
+        {
+          "repo_id": "Comfy-Org/MiniMax-H3",
+          "filename": "diffusion_models/minimax_h3_fl2va_pruned_int8_convrot.safetensors",
+          "revision": "54472221d27c695fca9621b0c3ed52f06c4af707",
+          "sha256": "e889202c41dafb67b10d67b97f0d8541508036a6090af23425a5c2615d03c47a",
+          "size": 20970379616,
+          "target": "diffusion_models/minimax_h3_fl2va_pruned_int8_convrot.safetensors"
+        },
+        {
+          "repo_id": "Comfy-Org/MiniMax-H3",
+          "filename": "loras/minimax_h3_fl2v_turbo_8step_v1.0_comfyui_bf16.safetensors",
+          "revision": "54472221d27c695fca9621b0c3ed52f06c4af707",
+          "sha256": "2339acdf19bfe123f46b971ea35d367a84adb85de43627e1eceafa5a5b2b111e",
+          "size": 1956193000,
+          "target": "loras/minimax_h3_fl2v_turbo_8step_v1.0_comfyui_bf16.safetensors"
+        },
+        {
+          "repo_id": "Comfy-Org/MiniMax-H3",
+          "filename": "text_encoders/qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors",
+          "revision": "54472221d27c695fca9621b0c3ed52f06c4af707",
+          "sha256": "35a88d51044231fe332301d7a62aa81e3f2cba62febeb446e2c1e3e0ef76f2c6",
+          "size": 15687142551,
+          "target": "text_encoders/qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors"
+        },
+        {
+          "repo_id": "Comfy-Org/MiniMax-H3",
+          "filename": "vae/minimax_h3_video_vae_int8_convrot.safetensors",
+          "revision": "54472221d27c695fca9621b0c3ed52f06c4af707",
+          "sha256": "52a2c8c73583c86e4f41cdcce3a6ad0ea562987bc0bf3d60a0cef5f5c8e60c0e",
+          "size": 2811065184,
+          "target": "vae/minimax_h3_video_vae_int8_convrot.safetensors"
+        },
+        {
+          "repo_id": "Comfy-Org/MiniMax-H3",
+          "filename": "vae/minimax_h3_audio_vae_fp32.safetensors",
+          "revision": "54472221d27c695fca9621b0c3ed52f06c4af707",
+          "sha256": "8e505d95dd1561d47abd43d4238fd40d9bb1ae9e147ed0a4cba778d76ae4db48",
+          "size": 605254808,
+          "target": "vae/minimax_h3_audio_vae_fp32.safetensors"
+        }
+      ]
+    },
+    "manifest_version": 1,
+    "node_allowlist": [
+      "BasicGuider",
+      "BasicScheduler",
+      "CLIPLoader",
+      "CreateVideo",
+      "KSamplerSelect",
+      "LoadImage",
+      "LoraLoaderModelOnly",
+      "MiniMaxH3ImageToVideo",
+      "RandomNoise",
+      "SamplerCustomAdvanced",
+      "SaveVideo",
+      "UNETLoader",
+      "VAEDecode",
+      "VAEDecodeAudio",
+      "VAELoader"
+    ],
+    "comfyui_commit": "423cbd20511becb1f16122ab518e92e58bfa03d9",
+    "comfy_commit": "423cbd20511becb1f16122ab518e92e58bfa03d9",
+    "custom_nodes": [],
+    "weight_files": [
+      {
+        "repo_id": "Comfy-Org/MiniMax-H3",
+        "filename": "diffusion_models/minimax_h3_fl2va_pruned_int8_convrot.safetensors",
+        "revision": "54472221d27c695fca9621b0c3ed52f06c4af707",
+        "sha256": "e889202c41dafb67b10d67b97f0d8541508036a6090af23425a5c2615d03c47a",
+        "target": "diffusion_models/minimax_h3_fl2va_pruned_int8_convrot.safetensors",
+        "size": 20970379616
+      },
+      {
+        "repo_id": "Comfy-Org/MiniMax-H3",
+        "filename": "loras/minimax_h3_fl2v_turbo_8step_v1.0_comfyui_bf16.safetensors",
+        "revision": "54472221d27c695fca9621b0c3ed52f06c4af707",
+        "sha256": "2339acdf19bfe123f46b971ea35d367a84adb85de43627e1eceafa5a5b2b111e",
+        "target": "loras/minimax_h3_fl2v_turbo_8step_v1.0_comfyui_bf16.safetensors",
+        "size": 1956193000
+      },
+      {
+        "repo_id": "Comfy-Org/MiniMax-H3",
+        "filename": "text_encoders/qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors",
+        "revision": "54472221d27c695fca9621b0c3ed52f06c4af707",
+        "sha256": "35a88d51044231fe332301d7a62aa81e3f2cba62febeb446e2c1e3e0ef76f2c6",
+        "target": "text_encoders/qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors",
+        "size": 15687142551
+      },
+      {
+        "repo_id": "Comfy-Org/MiniMax-H3",
+        "filename": "vae/minimax_h3_video_vae_int8_convrot.safetensors",
+        "revision": "54472221d27c695fca9621b0c3ed52f06c4af707",
+        "sha256": "52a2c8c73583c86e4f41cdcce3a6ad0ea562987bc0bf3d60a0cef5f5c8e60c0e",
+        "target": "vae/minimax_h3_video_vae_int8_convrot.safetensors",
+        "size": 2811065184
+      },
+      {
+        "repo_id": "Comfy-Org/MiniMax-H3",
+        "filename": "vae/minimax_h3_audio_vae_fp32.safetensors",
+        "revision": "54472221d27c695fca9621b0c3ed52f06c4af707",
+        "sha256": "8e505d95dd1561d47abd43d4238fd40d9bb1ae9e147ed0a4cba778d76ae4db48",
+        "target": "vae/minimax_h3_audio_vae_fp32.safetensors",
+        "size": 605254808
+      }
+    ]
+  },
+  "api_graph": {
+    "1": {
+      "class_type": "LoadImage",
+      "inputs": {
+        "image": "input_first_frame.jpg"
+      }
+    },
+    "2": {
+      "class_type": "LoadImage",
+      "inputs": {
+        "image": "input_last_frame.jpg"
+      }
+    },
+    "10": {
+      "class_type": "UNETLoader",
+      "inputs": {
+        "unet_name": "minimax_h3_fl2va_pruned_int8_convrot.safetensors",
+        "weight_dtype": "default"
+      }
+    },
+    "11": {
+      "class_type": "LoraLoaderModelOnly",
+      "inputs": {
+        "model": [
+          "10",
+          0
+        ],
+        "lora_name": "minimax_h3_fl2v_turbo_8step_v1.0_comfyui_bf16.safetensors",
+        "strength_model": 1.0
+      }
+    },
+    "12": {
+      "class_type": "CLIPLoader",
+      "inputs": {
+        "clip_name": "qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors",
+        "type": "minimax",
+        "device": "default"
+      }
+    },
+    "13": {
+      "class_type": "VAELoader",
+      "inputs": {
+        "vae_name": "minimax_h3_video_vae_int8_convrot.safetensors"
+      }
+    },
+    "14": {
+      "class_type": "VAELoader",
+      "inputs": {
+        "vae_name": "minimax_h3_audio_vae_fp32.safetensors"
+      }
+    },
+    "20": {
+      "class_type": "MiniMaxH3ImageToVideo",
+      "inputs": {
+        "clip": [
+          "12",
+          0
+        ],
+        "vae": [
+          "13",
+          0
+        ],
+        "prompt": "Animate the reference image with gentle natural motion.",
+        "width": 480,
+        "height": 864,
+        "length": 124,
+        "first_frame": [
+          "1",
+          0
+        ],
+        "last_frame": [
+          "2",
+          0
+        ]
+      }
+    },
+    "21": {
+      "class_type": "KSamplerSelect",
+      "inputs": {
+        "sampler_name": "res_multistep"
+      }
+    },
+    "22": {
+      "class_type": "BasicScheduler",
+      "inputs": {
+        "model": [
+          "11",
+          0
+        ],
+        "scheduler": "simple",
+        "steps": 8,
+        "denoise": 1.0
+      }
+    },
+    "23": {
+      "class_type": "RandomNoise",
+      "inputs": {
+        "noise_seed": 1
+      }
+    },
+    "24": {
+      "class_type": "BasicGuider",
+      "inputs": {
+        "model": [
+          "11",
+          0
+        ],
+        "conditioning": [
+          "20",
+          0
+        ]
+      }
+    },
+    "25": {
+      "class_type": "SamplerCustomAdvanced",
+      "inputs": {
+        "noise": [
+          "23",
+          0
+        ],
+        "guider": [
+          "24",
+          0
+        ],
+        "sampler": [
+          "21",
+          0
+        ],
+        "sigmas": [
+          "22",
+          0
+        ],
+        "latent_image": [
+          "20",
+          1
+        ]
+      }
+    },
+    "26": {
+      "class_type": "VAEDecode",
+      "inputs": {
+        "samples": [
+          "25",
+          0
+        ],
+        "vae": [
+          "13",
+          0
+        ]
+      }
+    },
+    "27": {
+      "class_type": "VAEDecodeAudio",
+      "inputs": {
+        "samples": [
+          "25",
+          0
+        ],
+        "vae": [
+          "14",
+          0
+        ]
+      }
+    },
+    "28": {
+      "class_type": "CreateVideo",
+      "inputs": {
+        "images": [
+          "26",
+          0
+        ],
+        "fps": 24.0,
+        "audio": [
+          "27",
+          0
+        ]
+      }
+    },
+    "29": {
+      "class_type": "SaveVideo",
+      "inputs": {
+        "video": [
+          "28",
+          0
+        ],
+        "filename_prefix": "video/MiniMax_H3",
+        "format": "auto",
+        "format.codec": "auto"
+      }
+    }
+  },
+  "object_info": {
+    "MiniMaxH3ImageToVideo": {
+      "input": {
+        "required": {
+          "clip": [
+            "CLIP",
+            {}
+          ],
+          "vae": [
+            "VAE",
+            {}
+          ],
+          "prompt": [
+            "STRING",
+            {
+              "multiline": true,
+              "dynamicPrompts": true
+            }
+          ],
+          "width": [
+            "INT",
+            {
+              "default": 1344,
+              "min": 32,
+              "max": 16384,
+              "step": 32
+            }
+          ],
+          "height": [
+            "INT",
+            {
+              "default": 768,
+              "min": 32,
+              "max": 16384,
+              "step": 32
+            }
+          ],
+          "length": [
+            "INT",
+            {
+              "tooltip": "Frame count at 24 fps, snapped up to the model's 17k+5 grid (124 = ~5s; trained range is ~124-362, longer is untested)",
+              "default": 124,
+              "min": 5,
+              "max": 3600,
+              "step": 17
+            }
+          ]
+        },
+        "optional": {
+          "first_frame": [
+            "IMAGE",
+            {}
+          ],
+          "last_frame": [
+            "IMAGE",
+            {}
+          ]
+        }
+      },
+      "input_order": {
+        "required": [
+          "clip",
+          "vae",
+          "prompt",
+          "width",
+          "height",
+          "length"
+        ],
+        "optional": [
+          "first_frame",
+          "last_frame"
+        ]
+      },
+      "is_input_list": false,
+      "output": [
+        "CONDITIONING",
+        "LATENT"
+      ],
+      "output_is_list": [
+        false,
+        false
+      ],
+      "output_name": [
+        "positive",
+        "LATENT"
+      ],
+      "output_tooltips": [
+        null,
+        null
+      ],
+      "output_matchtypes": null,
+      "name": "MiniMaxH3ImageToVideo",
+      "display_name": "MiniMax H3 Image to Video",
+      "description": "",
+      "python_module": "comfy_extras.nodes_minimax_h3",
+      "category": "model/conditioning/minimax",
+      "output_node": false,
+      "deprecated": false,
+      "experimental": false,
+      "dev_only": false,
+      "api_node": false,
+      "price_badge": null,
+      "search_aliases": null,
+      "essentials_category": null,
+      "has_intermediate_output": false
+    },
+    "LoadImage": {
+      "input": {
+        "required": {
+          "image": [
+            [
+              "input_first_frame.jpg",
+              "input_last_frame.jpg"
+            ]
+          ]
+        }
+      },
+      "input_order": {
+        "required": [
+          "image"
+        ]
+      },
+      "output": [
+        "IMAGE",
+        "MASK"
+      ],
+      "output_name": [
+        "IMAGE",
+        "MASK"
+      ],
+      "name": "LoadImage",
+      "output_node": false
+    },
+    "UNETLoader": {
+      "input": {
+        "required": {
+          "unet_name": [
+            [
+              "minimax_h3_fl2va_pruned_int8_convrot.safetensors"
+            ]
+          ],
+          "weight_dtype": [
+            [
+              "default",
+              "fp8_e4m3fn",
+              "fp8_e4m3fn_fast",
+              "fp8_e5m2"
+            ],
+            {
+              "advanced": true
+            }
+          ]
+        }
+      },
+      "input_order": {
+        "required": [
+          "unet_name",
+          "weight_dtype"
+        ]
+      },
+      "output": [
+        "MODEL"
+      ],
+      "output_name": [
+        "MODEL"
+      ],
+      "name": "UNETLoader",
+      "output_node": false
+    },
+    "CLIPLoader": {
+      "input": {
+        "required": {
+          "clip_name": [
+            [
+              "qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors"
+            ]
+          ],
+          "type": [
+            [
+              "stable_diffusion",
+              "stable_cascade",
+              "sd3",
+              "stable_audio",
+              "mochi",
+              "ltxv",
+              "pixart",
+              "cosmos",
+              "lumina2",
+              "wan",
+              "hidream",
+              "chroma",
+              "ace",
+              "omnigen2",
+              "qwen_image",
+              "hunyuan_image",
+              "flux2",
+              "ovis",
+              "longcat_image",
+              "cogvideox",
+              "lens",
+              "pixeldit",
+              "ideogram4",
+              "boogu",
+              "krea2",
+              "joyimage",
+              "mage",
+              "minimax",
+              "yue2",
+              "flux3",
+              "moss_image",
+              "fibo2"
+            ]
+          ]
+        },
+        "optional": {
+          "device": [
+            [
+              "default",
+              "cpu"
+            ],
+            {
+              "advanced": true
+            }
+          ]
+        }
+      },
+      "input_order": {
+        "required": [
+          "clip_name",
+          "type"
+        ],
+        "optional": [
+          "device"
+        ]
+      },
+      "output": [
+        "CLIP"
+      ],
+      "output_name": [
+        "CLIP"
+      ],
+      "name": "CLIPLoader",
+      "output_node": false
+    },
+    "VAELoader": {
+      "input": {
+        "required": {
+          "vae_name": [
+            [
+              "minimax_h3_video_vae_int8_convrot.safetensors",
+              "minimax_h3_audio_vae_fp32.safetensors"
+            ]
+          ]
+        }
+      },
+      "input_order": {
+        "required": [
+          "vae_name"
+        ]
+      },
+      "output": [
+        "VAE"
+      ],
+      "output_name": [
+        "VAE"
+      ],
+      "name": "VAELoader",
+      "output_node": false
+    },
+    "LoraLoaderModelOnly": {
+      "input": {
+        "required": {
+          "model": [
+            "MODEL"
+          ],
+          "lora_name": [
+            [
+              "minimax_h3_fl2v_turbo_8step_v1.0_comfyui_bf16.safetensors"
+            ]
+          ],
+          "strength_model": [
+            "FLOAT",
+            {
+              "default": 1.0,
+              "min": -100.0,
+              "max": 100.0,
+              "step": 0.01
+            }
+          ]
+        }
+      },
+      "input_order": {
+        "required": [
+          "model",
+          "lora_name",
+          "strength_model"
+        ]
+      },
+      "output": [
+        "MODEL"
+      ],
+      "output_name": [
+        "MODEL"
+      ],
+      "name": "LoraLoaderModelOnly",
+      "output_node": false
+    },
+    "KSamplerSelect": {
+      "input": {
+        "required": {
+          "sampler_name": [
+            "COMBO",
+            {
+              "multiselect": false,
+              "options": [
+                "euler",
+                "euler_cfg_pp",
+                "euler_ancestral",
+                "euler_ancestral_cfg_pp",
+                "heun",
+                "heunpp2",
+                "exp_heun_2_x0",
+                "exp_heun_2_x0_sde",
+                "dpm_2",
+                "dpm_2_ancestral",
+                "lms",
+                "dpm_fast",
+                "dpm_adaptive",
+                "dpmpp_2s_ancestral",
+                "dpmpp_2s_ancestral_cfg_pp",
+                "dpmpp_sde",
+                "dpmpp_sde_gpu",
+                "dpmpp_2m",
+                "dpmpp_2m_cfg_pp",
+                "dpmpp_2m_sde",
+                "dpmpp_2m_sde_gpu",
+                "dpmpp_2m_sde_heun",
+                "dpmpp_2m_sde_heun_gpu",
+                "dpmpp_3m_sde",
+                "dpmpp_3m_sde_gpu",
+                "ddpm",
+                "lcm",
+                "ipndm",
+                "ipndm_v",
+                "deis",
+                "cfgpp_ud10_ab",
+                "res_multistep",
+                "res_multistep_cfg_pp",
+                "res_multistep_ancestral",
+                "res_multistep_ancestral_cfg_pp",
+                "gradient_estimation",
+                "gradient_estimation_cfg_pp",
+                "er_sde",
+                "seeds_2",
+                "seeds_3",
+                "sa_solver",
+                "sa_solver_pece",
+                "ddim",
+                "uni_pc",
+                "uni_pc_bh2"
+              ]
+            }
+          ]
+        }
+      },
+      "input_order": {
+        "required": [
+          "sampler_name"
+        ]
+      },
+      "is_input_list": false,
+      "output": [
+        "SAMPLER"
+      ],
+      "output_is_list": [
+        false
+      ],
+      "output_name": [
+        "SAMPLER"
+      ],
+      "output_tooltips": [
+        null
+      ],
+      "output_matchtypes": null,
+      "name": "KSamplerSelect",
+      "display_name": null,
+      "description": "",
+      "python_module": "comfy_extras.nodes_custom_sampler",
+      "category": "model/sampling/samplers",
+      "output_node": false,
+      "deprecated": false,
+      "experimental": false,
+      "dev_only": false,
+      "api_node": false,
+      "price_badge": null,
+      "search_aliases": null,
+      "essentials_category": null,
+      "has_intermediate_output": false
+    },
+    "BasicScheduler": {
+      "input": {
+        "required": {
+          "model": [
+            "MODEL",
+            {}
+          ],
+          "scheduler": [
+            "COMBO",
+            {
+              "multiselect": false,
+              "options": [
+                "simple",
+                "sgm_uniform",
+                "karras",
+                "exponential",
+                "ddim_uniform",
+                "beta",
+                "normal",
+                "linear_quadratic",
+                "kl_optimal"
+              ]
+            }
+          ],
+          "steps": [
+            "INT",
+            {
+              "default": 20,
+              "min": 1,
+              "max": 10000
+            }
+          ],
+          "denoise": [
+            "FLOAT",
+            {
+              "default": 1.0,
+              "min": 0.0,
+              "max": 1.0,
+              "step": 0.01
+            }
+          ]
+        }
+      },
+      "input_order": {
+        "required": [
+          "model",
+          "scheduler",
+          "steps",
+          "denoise"
+        ]
+      },
+      "is_input_list": false,
+      "output": [
+        "SIGMAS"
+      ],
+      "output_is_list": [
+        false
+      ],
+      "output_name": [
+        "SIGMAS"
+      ],
+      "output_tooltips": [
+        null
+      ],
+      "output_matchtypes": null,
+      "name": "BasicScheduler",
+      "display_name": null,
+      "description": "",
+      "python_module": "comfy_extras.nodes_custom_sampler",
+      "category": "model/sampling/schedulers",
+      "output_node": false,
+      "deprecated": false,
+      "experimental": false,
+      "dev_only": false,
+      "api_node": false,
+      "price_badge": null,
+      "search_aliases": null,
+      "essentials_category": null,
+      "has_intermediate_output": false
+    },
+    "RandomNoise": {
+      "input": {
+        "required": {
+          "noise_seed": [
+            "INT",
+            {
+              "default": 0,
+              "min": 0,
+              "max": 18446744073709551615,
+              "control_after_generate": true
+            }
+          ]
+        }
+      },
+      "input_order": {
+        "required": [
+          "noise_seed"
+        ]
+      },
+      "is_input_list": false,
+      "output": [
+        "NOISE"
+      ],
+      "output_is_list": [
+        false
+      ],
+      "output_name": [
+        "NOISE"
+      ],
+      "output_tooltips": [
+        null
+      ],
+      "output_matchtypes": null,
+      "name": "RandomNoise",
+      "display_name": null,
+      "description": "",
+      "python_module": "comfy_extras.nodes_custom_sampler",
+      "category": "model/sampling/noise",
+      "output_node": false,
+      "deprecated": false,
+      "experimental": false,
+      "dev_only": false,
+      "api_node": false,
+      "price_badge": null,
+      "search_aliases": null,
+      "essentials_category": null,
+      "has_intermediate_output": false
+    },
+    "BasicGuider": {
+      "input": {
+        "required": {
+          "model": [
+            "MODEL",
+            {}
+          ],
+          "conditioning": [
+            "CONDITIONING",
+            {}
+          ]
+        }
+      },
+      "input_order": {
+        "required": [
+          "model",
+          "conditioning"
+        ]
+      },
+      "is_input_list": false,
+      "output": [
+        "GUIDER"
+      ],
+      "output_is_list": [
+        false
+      ],
+      "output_name": [
+        "GUIDER"
+      ],
+      "output_tooltips": [
+        null
+      ],
+      "output_matchtypes": null,
+      "name": "BasicGuider",
+      "display_name": "Basic Guider",
+      "description": "",
+      "python_module": "comfy_extras.nodes_custom_sampler",
+      "category": "model/sampling/guiders",
+      "output_node": false,
+      "deprecated": false,
+      "experimental": false,
+      "dev_only": false,
+      "api_node": false,
+      "price_badge": null,
+      "search_aliases": null,
+      "essentials_category": null,
+      "has_intermediate_output": false
+    },
+    "SamplerCustomAdvanced": {
+      "input": {
+        "required": {
+          "noise": [
+            "NOISE",
+            {}
+          ],
+          "guider": [
+            "GUIDER",
+            {}
+          ],
+          "sampler": [
+            "SAMPLER",
+            {}
+          ],
+          "sigmas": [
+            "SIGMAS",
+            {}
+          ],
+          "latent_image": [
+            "LATENT",
+            {}
+          ]
+        }
+      },
+      "input_order": {
+        "required": [
+          "noise",
+          "guider",
+          "sampler",
+          "sigmas",
+          "latent_image"
+        ]
+      },
+      "is_input_list": false,
+      "output": [
+        "LATENT",
+        "LATENT"
+      ],
+      "output_is_list": [
+        false,
+        false
+      ],
+      "output_name": [
+        "output",
+        "denoised_output"
+      ],
+      "output_tooltips": [
+        null,
+        null
+      ],
+      "output_matchtypes": null,
+      "name": "SamplerCustomAdvanced",
+      "display_name": null,
+      "description": "",
+      "python_module": "comfy_extras.nodes_custom_sampler",
+      "category": "model/sampling/custom",
+      "output_node": false,
+      "deprecated": false,
+      "experimental": false,
+      "dev_only": false,
+      "api_node": false,
+      "price_badge": null,
+      "search_aliases": null,
+      "essentials_category": null,
+      "has_intermediate_output": false
+    },
+    "VAEDecode": {
+      "input": {
+        "required": {
+          "samples": [
+            "LATENT",
+            {
+              "tooltip": "The latent to be decoded."
+            }
+          ],
+          "vae": [
+            "VAE",
+            {
+              "tooltip": "The VAE model used for decoding the latent."
+            }
+          ]
+        }
+      },
+      "input_order": {
+        "required": [
+          "samples",
+          "vae"
+        ]
+      },
+      "output": [
+        "IMAGE"
+      ],
+      "output_name": [
+        "IMAGE"
+      ],
+      "name": "VAEDecode",
+      "output_node": false
+    },
+    "VAEDecodeAudio": {
+      "input": {
+        "required": {
+          "samples": [
+            "LATENT",
+            {}
+          ],
+          "vae": [
+            "VAE",
+            {}
+          ]
+        }
+      },
+      "input_order": {
+        "required": [
+          "samples",
+          "vae"
+        ]
+      },
+      "is_input_list": false,
+      "output": [
+        "AUDIO"
+      ],
+      "output_is_list": [
+        false
+      ],
+      "output_name": [
+        "AUDIO"
+      ],
+      "output_tooltips": [
+        null
+      ],
+      "output_matchtypes": null,
+      "name": "VAEDecodeAudio",
+      "display_name": "VAE Decode Audio",
+      "description": "",
+      "python_module": "comfy_extras.nodes_audio",
+      "category": "model/latent",
+      "output_node": false,
+      "deprecated": false,
+      "experimental": false,
+      "dev_only": false,
+      "api_node": false,
+      "price_badge": null,
+      "search_aliases": [
+        "latent to audio"
+      ],
+      "essentials_category": null,
+      "has_intermediate_output": false
+    },
+    "CreateVideo": {
+      "input": {
+        "required": {
+          "images": [
+            "IMAGE",
+            {
+              "tooltip": "The images to create a video from."
+            }
+          ],
+          "fps": [
+            "FLOAT",
+            {
+              "default": 30.0,
+              "min": 1.0,
+              "max": 120.0,
+              "step": 1.0
+            }
+          ]
+        },
+        "optional": {
+          "audio": [
+            "AUDIO",
+            {
+              "tooltip": "The audio to add to the video."
+            }
+          ],
+          "bit_depth": [
+            "COMBO",
+            {
+              "tooltip": "Auto uses 8-bit for sRGB and 10-bit for HDR. Explicit 8-bit and 10-bit choices are independent of colorspace.",
+              "default": "auto",
+              "multiselect": false,
+              "options": [
+                "auto",
+                8,
+                10
+              ]
+            }
+          ],
+          "color_space": [
+            "COMBO",
+            {
+              "tooltip": "Colorspace of the input images. HDR selects BT.2020/HLG and HDR PQ selects BT.2020/PQ.",
+              "default": "sRGB",
+              "multiselect": false,
+              "options": [
+                "sRGB",
+                "HDR",
+                "HDR PQ"
+              ]
+            }
+          ],
+          "codec": [
+            "COMBO",
+            {
+              "tooltip": "Optionally encode the video immediately. None keeps the images in tensor form; Auto uses H.264.",
+              "advanced": true,
+              "default": "none",
+              "multiselect": false,
+              "options": [
+                "none",
+                "auto",
+                "h264",
+                "av1"
+              ]
+            }
+          ]
+        }
+      },
+      "input_order": {
+        "required": [
+          "images",
+          "fps"
+        ],
+        "optional": [
+          "audio",
+          "bit_depth",
+          "color_space",
+          "codec"
+        ]
+      },
+      "is_input_list": false,
+      "output": [
+        "VIDEO"
+      ],
+      "output_is_list": [
+        false
+      ],
+      "output_name": [
+        "VIDEO"
+      ],
+      "output_tooltips": [
+        null
+      ],
+      "output_matchtypes": null,
+      "name": "CreateVideo",
+      "display_name": "Create Video",
+      "description": "Create a video from images.",
+      "python_module": "comfy_extras.nodes_video",
+      "category": "video",
+      "output_node": false,
+      "deprecated": false,
+      "experimental": false,
+      "dev_only": false,
+      "api_node": false,
+      "price_badge": null,
+      "search_aliases": [
+        "images to video"
+      ],
+      "essentials_category": "Video Tools",
+      "has_intermediate_output": false
+    },
+    "SaveVideo": {
+      "input": {
+        "required": {
+          "video": [
+            "VIDEO",
+            {
+              "tooltip": "The video to save."
+            }
+          ],
+          "filename_prefix": [
+            "STRING",
+            {
+              "tooltip": "The prefix for the file to save. This may include formatting information such as %date:yyyy-MM-dd% or %Empty Latent Image.width% to include values from nodes.",
+              "default": "video/ComfyUI",
+              "multiline": false
+            }
+          ],
+          "format": [
+            [
+              "auto"
+            ],
+            {}
+          ]
+        },
+        "optional": {
+          "format.codec": [
+            [
+              "auto"
+            ],
+            {}
+          ]
+        },
+        "hidden": {
+          "prompt": [
+            "PROMPT"
+          ],
+          "extra_pnginfo": [
+            "EXTRA_PNGINFO"
+          ]
+        }
+      },
+      "input_order": {
+        "required": [
+          "video",
+          "filename_prefix",
+          "format"
+        ],
+        "optional": [
+          "codec"
+        ],
+        "hidden": [
+          "prompt",
+          "extra_pnginfo"
+        ]
+      },
+      "is_input_list": false,
+      "output": [
+        "VIDEO"
+      ],
+      "output_is_list": [
+        false
+      ],
+      "output_name": [
+        "video"
+      ],
+      "output_tooltips": [
+        "The input video, unchanged."
+      ],
+      "output_matchtypes": null,
+      "name": "SaveVideo",
+      "display_name": "Save Video",
+      "description": "Saves the input videos to your ComfyUI output directory.",
+      "python_module": "comfy_extras.nodes_video",
+      "category": "video",
+      "output_node": true,
+      "deprecated": false,
+      "experimental": false,
+      "dev_only": false,
+      "api_node": false,
+      "price_badge": null,
+      "search_aliases": [
+        "export video"
+      ],
+      "essentials_category": "Basics",
+      "has_intermediate_output": false
+    }
+  }
+}

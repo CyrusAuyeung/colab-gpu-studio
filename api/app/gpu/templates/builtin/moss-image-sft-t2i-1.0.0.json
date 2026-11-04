@@ -1,0 +1,840 @@
+{
+  "workflow_key": "moss-image-sft-t2i",
+  "model_id": "moss-image-sft",
+  "model": {
+    "model_id": "moss-image-sft",
+    "display_name": "MOSS-Image SFT",
+    "revision": "f972bd4b4b9e3852133cc5da954d87bc32cd8fb9",
+    "source": "https://huggingface.co/OpenMOSS-Team/MOSS-Image-SFT",
+    "license": "Apache-2.0",
+    "modality": "image",
+    "resource_profile": {
+      "disk_gb": 12.2,
+      "weights_gb": 13.0,
+      "min_vram_gb": 15
+    },
+    "variants": [
+      "int8_convrot + w4a8_gptq（T4 可跑）"
+    ]
+  },
+  "manifest": {
+    "workflow_key": "moss-image-sft-t2i",
+    "model_id": "moss-image-sft",
+    "version": "1.0.0",
+    "title": "MOSS-Image SFT 文生图",
+    "description": "OpenMOSS MOSS-Image SFT（int8），单张文生图；固定在 Colab T4 上运行。",
+    "modality": "image",
+    "executor": "comfyui",
+    "compute_spec": {
+      "variant": "VARIANT_GPU",
+      "accelerator": "T4",
+      "shape": "SHAPE_STANDARD"
+    },
+    "max_runtime_minutes": 40,
+    "parameters": {
+      "prompt": {
+        "type": "string",
+        "label": "提示词",
+        "description": "中文或英文均可；结构化长提示效果更好。",
+        "binding": {
+          "node": "4",
+          "input": "text"
+        },
+        "required": true,
+        "default": "A quiet garden in soft daylight."
+      },
+      "negative": {
+        "type": "string",
+        "label": "不想要的内容",
+        "description": "留空即可。",
+        "binding": {
+          "node": "5",
+          "input": "text"
+        },
+        "advanced": true,
+        "default": ""
+      },
+      "width": {
+        "type": "integer",
+        "label": "宽",
+        "description": "必须是 16 的倍数。",
+        "binding": {
+          "node": "6",
+          "input": "width"
+        },
+        "default": 832,
+        "min": 512,
+        "max": 1536,
+        "step": 16
+      },
+      "height": {
+        "type": "integer",
+        "label": "高",
+        "description": "必须是 16 的倍数。",
+        "binding": {
+          "node": "6",
+          "input": "height"
+        },
+        "default": 1248,
+        "min": 512,
+        "max": 1536,
+        "step": 16
+      },
+      "steps": {
+        "type": "integer",
+        "label": "步数",
+        "description": "越多越慢，T4 上每步约几秒。",
+        "binding": {
+          "node": "8",
+          "input": "steps"
+        },
+        "default": 35,
+        "min": 10,
+        "max": 60,
+        "advanced": true
+      },
+      "cfg": {
+        "type": "number",
+        "label": "提示词强度",
+        "description": "",
+        "binding": {
+          "node": "8",
+          "input": "cfg"
+        },
+        "default": 2.5,
+        "min": 1.0,
+        "max": 6.0,
+        "step": 0.1,
+        "advanced": true
+      },
+      "shift": {
+        "type": "number",
+        "label": "采样偏移 shift",
+        "description": "",
+        "binding": {
+          "node": "2",
+          "input": "shift"
+        },
+        "default": 5.0,
+        "min": 1.0,
+        "max": 10.0,
+        "step": 0.1,
+        "advanced": true
+      },
+      "seed": {
+        "type": "integer",
+        "label": "随机种子",
+        "description": "-1 表示每次随机。",
+        "binding": {
+          "node": "8",
+          "input": "seed"
+        },
+        "default": -1,
+        "min": 0,
+        "max": 4294967295,
+        "advanced": true
+      }
+    },
+    "dependencies": {
+      "comfyui_commit": "423cbd20511becb1f16122ab518e92e58bfa03d9",
+      "custom_nodes": [],
+      "weight_files": [
+        {
+          "repo_id": "Comfy-Org/MOSS-Image",
+          "filename": "diffusion_models/moss_image_sft_int8_convrot.safetensors",
+          "revision": "530a4c94f92c35ef6818b1b035a983fe9dcf5f54",
+          "sha256": "b4d1475bc7eeffd7b809e82ea13a1fba1fb85c4e18365af3813722faa5c0fe4f",
+          "size": 5413698958,
+          "target": "diffusion_models/moss_image_sft_int8_convrot.safetensors"
+        },
+        {
+          "repo_id": "Comfy-Org/MOSS-Image",
+          "filename": "text_encoders/qwen3.5_9b_w4a8_gptq.safetensors",
+          "revision": "530a4c94f92c35ef6818b1b035a983fe9dcf5f54",
+          "sha256": "4cc6a1543ad2061806da46f35f90cadb4801dcba246c44782cf42ec0feb6407c",
+          "size": 7343591088,
+          "target": "text_encoders/qwen3.5_9b_w4a8_gptq.safetensors"
+        },
+        {
+          "repo_id": "Comfy-Org/MOSS-Image",
+          "filename": "vae/flux2-vae_small.safetensors",
+          "revision": "530a4c94f92c35ef6818b1b035a983fe9dcf5f54",
+          "sha256": "d8d52ba036475f5fb07c8b435e176d3d97ebfa82f0d1a1c317f9cc1e25bd013b",
+          "size": 249521340,
+          "target": "vae/flux2-vae_small.safetensors"
+        }
+      ]
+    },
+    "manifest_version": 1,
+    "node_allowlist": [
+      "CLIPLoader",
+      "CLIPTextEncode",
+      "EmptyFlux2LatentImage",
+      "KSampler",
+      "ModelSamplingAuraFlow",
+      "SaveImage",
+      "UNETLoader",
+      "VAEDecode",
+      "VAELoader"
+    ],
+    "comfyui_commit": "423cbd20511becb1f16122ab518e92e58bfa03d9",
+    "comfy_commit": "423cbd20511becb1f16122ab518e92e58bfa03d9",
+    "custom_nodes": [],
+    "weight_files": [
+      {
+        "repo_id": "Comfy-Org/MOSS-Image",
+        "filename": "diffusion_models/moss_image_sft_int8_convrot.safetensors",
+        "revision": "530a4c94f92c35ef6818b1b035a983fe9dcf5f54",
+        "sha256": "b4d1475bc7eeffd7b809e82ea13a1fba1fb85c4e18365af3813722faa5c0fe4f",
+        "target": "diffusion_models/moss_image_sft_int8_convrot.safetensors",
+        "size": 5413698958
+      },
+      {
+        "repo_id": "Comfy-Org/MOSS-Image",
+        "filename": "text_encoders/qwen3.5_9b_w4a8_gptq.safetensors",
+        "revision": "530a4c94f92c35ef6818b1b035a983fe9dcf5f54",
+        "sha256": "4cc6a1543ad2061806da46f35f90cadb4801dcba246c44782cf42ec0feb6407c",
+        "target": "text_encoders/qwen3.5_9b_w4a8_gptq.safetensors",
+        "size": 7343591088
+      },
+      {
+        "repo_id": "Comfy-Org/MOSS-Image",
+        "filename": "vae/flux2-vae_small.safetensors",
+        "revision": "530a4c94f92c35ef6818b1b035a983fe9dcf5f54",
+        "sha256": "d8d52ba036475f5fb07c8b435e176d3d97ebfa82f0d1a1c317f9cc1e25bd013b",
+        "target": "vae/flux2-vae_small.safetensors",
+        "size": 249521340
+      }
+    ]
+  },
+  "api_graph": {
+    "1": {
+      "class_type": "UNETLoader",
+      "inputs": {
+        "unet_name": "moss_image_sft_int8_convrot.safetensors",
+        "weight_dtype": "default"
+      }
+    },
+    "2": {
+      "class_type": "ModelSamplingAuraFlow",
+      "inputs": {
+        "model": [
+          "1",
+          0
+        ],
+        "shift": 5.0,
+        "sampling": "flow"
+      }
+    },
+    "3": {
+      "class_type": "CLIPLoader",
+      "inputs": {
+        "clip_name": "qwen3.5_9b_w4a8_gptq.safetensors",
+        "type": "moss_image",
+        "device": "default"
+      }
+    },
+    "4": {
+      "class_type": "CLIPTextEncode",
+      "inputs": {
+        "text": "A quiet garden in soft daylight.",
+        "clip": [
+          "3",
+          0
+        ]
+      }
+    },
+    "5": {
+      "class_type": "CLIPTextEncode",
+      "inputs": {
+        "text": "",
+        "clip": [
+          "3",
+          0
+        ]
+      }
+    },
+    "6": {
+      "class_type": "EmptyFlux2LatentImage",
+      "inputs": {
+        "width": 832,
+        "height": 1248,
+        "batch_size": 1
+      }
+    },
+    "7": {
+      "class_type": "VAELoader",
+      "inputs": {
+        "vae_name": "flux2-vae_small.safetensors"
+      }
+    },
+    "8": {
+      "class_type": "KSampler",
+      "inputs": {
+        "model": [
+          "2",
+          0
+        ],
+        "seed": 0,
+        "steps": 35,
+        "cfg": 2.5,
+        "sampler_name": "euler",
+        "scheduler": "simple",
+        "positive": [
+          "4",
+          0
+        ],
+        "negative": [
+          "5",
+          0
+        ],
+        "latent_image": [
+          "6",
+          0
+        ],
+        "denoise": 1.0
+      }
+    },
+    "9": {
+      "class_type": "VAEDecode",
+      "inputs": {
+        "samples": [
+          "8",
+          0
+        ],
+        "vae": [
+          "7",
+          0
+        ]
+      }
+    },
+    "10": {
+      "class_type": "SaveImage",
+      "inputs": {
+        "images": [
+          "9",
+          0
+        ],
+        "filename_prefix": "moss_sft"
+      }
+    }
+  },
+  "object_info": {
+    "UNETLoader": {
+      "input": {
+        "required": {
+          "unet_name": [
+            [
+              "moss_image_sft_int8_convrot.safetensors"
+            ]
+          ],
+          "weight_dtype": [
+            [
+              "default",
+              "fp8_e4m3fn",
+              "fp8_e4m3fn_fast",
+              "fp8_e5m2"
+            ],
+            {
+              "advanced": true
+            }
+          ]
+        }
+      },
+      "input_order": {
+        "required": [
+          "unet_name",
+          "weight_dtype"
+        ]
+      },
+      "output": [
+        "MODEL"
+      ],
+      "output_name": [
+        "MODEL"
+      ],
+      "name": "UNETLoader",
+      "output_node": false
+    },
+    "ModelSamplingAuraFlow": {
+      "input": {
+        "required": {
+          "model": [
+            "MODEL"
+          ],
+          "shift": [
+            "FLOAT",
+            {
+              "default": 1.73,
+              "min": 0.0,
+              "max": 100.0,
+              "step": 0.01
+            }
+          ]
+        },
+        "optional": {
+          "sampling": [
+            [
+              "flow",
+              "img_to_img_velocity"
+            ],
+            {
+              "default": "flow",
+              "advanced": true
+            }
+          ]
+        }
+      },
+      "input_order": {
+        "required": [
+          "model",
+          "shift"
+        ],
+        "optional": [
+          "sampling"
+        ]
+      },
+      "output": [
+        "MODEL"
+      ],
+      "output_name": [
+        "MODEL"
+      ],
+      "name": "ModelSamplingAuraFlow",
+      "output_node": false
+    },
+    "CLIPLoader": {
+      "input": {
+        "required": {
+          "clip_name": [
+            [
+              "qwen3.5_9b_w4a8_gptq.safetensors"
+            ]
+          ],
+          "type": [
+            [
+              "stable_diffusion",
+              "stable_cascade",
+              "sd3",
+              "stable_audio",
+              "mochi",
+              "ltxv",
+              "pixart",
+              "cosmos",
+              "lumina2",
+              "wan",
+              "hidream",
+              "chroma",
+              "ace",
+              "omnigen2",
+              "qwen_image",
+              "hunyuan_image",
+              "flux2",
+              "ovis",
+              "longcat_image",
+              "cogvideox",
+              "lens",
+              "pixeldit",
+              "ideogram4",
+              "boogu",
+              "krea2",
+              "joyimage",
+              "mage",
+              "minimax",
+              "yue2",
+              "flux3",
+              "moss_image",
+              "fibo2"
+            ]
+          ]
+        },
+        "optional": {
+          "device": [
+            [
+              "default",
+              "cpu"
+            ],
+            {
+              "advanced": true
+            }
+          ]
+        }
+      },
+      "input_order": {
+        "required": [
+          "clip_name",
+          "type"
+        ],
+        "optional": [
+          "device"
+        ]
+      },
+      "output": [
+        "CLIP"
+      ],
+      "output_name": [
+        "CLIP"
+      ],
+      "name": "CLIPLoader",
+      "output_node": false
+    },
+    "VAELoader": {
+      "input": {
+        "required": {
+          "vae_name": [
+            [
+              "flux2-vae_small.safetensors"
+            ]
+          ]
+        }
+      },
+      "input_order": {
+        "required": [
+          "vae_name"
+        ]
+      },
+      "output": [
+        "VAE"
+      ],
+      "output_name": [
+        "VAE"
+      ],
+      "name": "VAELoader",
+      "output_node": false
+    },
+    "CLIPTextEncode": {
+      "input": {
+        "required": {
+          "text": [
+            "STRING",
+            {
+              "multiline": true,
+              "dynamicPrompts": true,
+              "tooltip": "The text to be encoded."
+            }
+          ],
+          "clip": [
+            "CLIP",
+            {
+              "tooltip": "The CLIP model used for encoding the text."
+            }
+          ]
+        }
+      },
+      "input_order": {
+        "required": [
+          "text",
+          "clip"
+        ]
+      },
+      "output": [
+        "CONDITIONING"
+      ],
+      "output_name": [
+        "CONDITIONING"
+      ],
+      "name": "CLIPTextEncode",
+      "output_node": false
+    },
+    "EmptyFlux2LatentImage": {
+      "input": {
+        "required": {
+          "width": [
+            "INT",
+            {
+              "default": 1024,
+              "min": 16,
+              "max": 16384,
+              "step": 16
+            }
+          ],
+          "height": [
+            "INT",
+            {
+              "default": 1024,
+              "min": 16,
+              "max": 16384,
+              "step": 16
+            }
+          ],
+          "batch_size": [
+            "INT",
+            {
+              "default": 1,
+              "min": 1,
+              "max": 4096
+            }
+          ]
+        }
+      },
+      "input_order": {
+        "required": [
+          "width",
+          "height",
+          "batch_size"
+        ]
+      },
+      "is_input_list": false,
+      "output": [
+        "LATENT"
+      ],
+      "output_is_list": [
+        false
+      ],
+      "output_name": [
+        "LATENT"
+      ],
+      "output_tooltips": [
+        null
+      ],
+      "output_matchtypes": null,
+      "name": "EmptyFlux2LatentImage",
+      "display_name": "Empty Flux 2 Latent",
+      "description": "",
+      "python_module": "comfy_extras.nodes_flux",
+      "category": "model/latent/flux",
+      "output_node": false,
+      "deprecated": false,
+      "experimental": false,
+      "dev_only": false,
+      "api_node": false,
+      "price_badge": null,
+      "search_aliases": null,
+      "essentials_category": null,
+      "has_intermediate_output": false
+    },
+    "KSampler": {
+      "input": {
+        "required": {
+          "model": [
+            "MODEL",
+            {
+              "tooltip": "The model used for denoising the input latent."
+            }
+          ],
+          "seed": [
+            "INT",
+            {
+              "default": 0,
+              "min": 0,
+              "max": 18446744073709551615,
+              "control_after_generate": true,
+              "tooltip": "The random seed used for creating the noise."
+            }
+          ],
+          "steps": [
+            "INT",
+            {
+              "default": 20,
+              "min": 1,
+              "max": 10000,
+              "tooltip": "The number of steps used in the denoising process."
+            }
+          ],
+          "cfg": [
+            "FLOAT",
+            {
+              "default": 8.0,
+              "min": 0.0,
+              "max": 100.0,
+              "step": 0.1,
+              "round": 0.01,
+              "tooltip": "The Classifier-Free Guidance scale balances creativity and adherence to the prompt. Higher values result in images more closely matching the prompt however too high values will negatively impact quality."
+            }
+          ],
+          "sampler_name": [
+            [
+              "euler",
+              "euler_cfg_pp",
+              "euler_ancestral",
+              "euler_ancestral_cfg_pp",
+              "heun",
+              "heunpp2",
+              "exp_heun_2_x0",
+              "exp_heun_2_x0_sde",
+              "dpm_2",
+              "dpm_2_ancestral",
+              "lms",
+              "dpm_fast",
+              "dpm_adaptive",
+              "dpmpp_2s_ancestral",
+              "dpmpp_2s_ancestral_cfg_pp",
+              "dpmpp_sde",
+              "dpmpp_sde_gpu",
+              "dpmpp_2m",
+              "dpmpp_2m_cfg_pp",
+              "dpmpp_2m_sde",
+              "dpmpp_2m_sde_gpu",
+              "dpmpp_2m_sde_heun",
+              "dpmpp_2m_sde_heun_gpu",
+              "dpmpp_3m_sde",
+              "dpmpp_3m_sde_gpu",
+              "ddpm",
+              "lcm",
+              "ipndm",
+              "ipndm_v",
+              "deis",
+              "cfgpp_ud10_ab",
+              "res_multistep",
+              "res_multistep_cfg_pp",
+              "res_multistep_ancestral",
+              "res_multistep_ancestral_cfg_pp",
+              "gradient_estimation",
+              "gradient_estimation_cfg_pp",
+              "er_sde",
+              "seeds_2",
+              "seeds_3",
+              "sa_solver",
+              "sa_solver_pece",
+              "ddim",
+              "uni_pc",
+              "uni_pc_bh2"
+            ],
+            {
+              "tooltip": "The algorithm used when sampling, this can affect the quality, speed, and style of the generated output."
+            }
+          ],
+          "scheduler": [
+            [
+              "simple",
+              "sgm_uniform",
+              "karras",
+              "exponential",
+              "ddim_uniform",
+              "beta",
+              "normal",
+              "linear_quadratic",
+              "kl_optimal"
+            ],
+            {
+              "tooltip": "The scheduler controls how noise is gradually removed to form the image."
+            }
+          ],
+          "positive": [
+            "CONDITIONING",
+            {
+              "tooltip": "The conditioning describing the attributes you want to include in the image."
+            }
+          ],
+          "negative": [
+            "CONDITIONING",
+            {
+              "tooltip": "The conditioning describing the attributes you want to exclude from the image."
+            }
+          ],
+          "latent_image": [
+            "LATENT",
+            {
+              "tooltip": "The latent image to denoise."
+            }
+          ],
+          "denoise": [
+            "FLOAT",
+            {
+              "default": 1.0,
+              "min": 0.0,
+              "max": 1.0,
+              "step": 0.01,
+              "tooltip": "The amount of denoising applied, lower values will maintain the structure of the initial image allowing for image to image sampling."
+            }
+          ]
+        }
+      },
+      "input_order": {
+        "required": [
+          "model",
+          "seed",
+          "steps",
+          "cfg",
+          "sampler_name",
+          "scheduler",
+          "positive",
+          "negative",
+          "latent_image",
+          "denoise"
+        ]
+      },
+      "output": [
+        "LATENT"
+      ],
+      "output_name": [
+        "LATENT"
+      ],
+      "name": "KSampler",
+      "output_node": false
+    },
+    "VAEDecode": {
+      "input": {
+        "required": {
+          "samples": [
+            "LATENT",
+            {
+              "tooltip": "The latent to be decoded."
+            }
+          ],
+          "vae": [
+            "VAE",
+            {
+              "tooltip": "The VAE model used for decoding the latent."
+            }
+          ]
+        }
+      },
+      "input_order": {
+        "required": [
+          "samples",
+          "vae"
+        ]
+      },
+      "output": [
+        "IMAGE"
+      ],
+      "output_name": [
+        "IMAGE"
+      ],
+      "name": "VAEDecode",
+      "output_node": false
+    },
+    "SaveImage": {
+      "input": {
+        "required": {
+          "images": [
+            "IMAGE",
+            {
+              "tooltip": "The images to save."
+            }
+          ],
+          "filename_prefix": [
+            "STRING",
+            {
+              "default": "ComfyUI",
+              "tooltip": "The prefix for the file to save. This may include formatting information such as %date:yyyy-MM-dd% or %Empty Latent Image.width% to include values from nodes."
+            }
+          ]
+        },
+        "hidden": {
+          "prompt": "PROMPT",
+          "extra_pnginfo": "EXTRA_PNGINFO"
+        }
+      },
+      "input_order": {
+        "required": [
+          "images",
+          "filename_prefix"
+        ],
+        "hidden": [
+          "prompt",
+          "extra_pnginfo"
+        ]
+      },
+      "output": [
+        "IMAGE"
+      ],
+      "output_name": [
+        "images"
+      ],
+      "name": "SaveImage",
+      "output_node": true
+    }
+  }
+}

@@ -144,6 +144,9 @@ class Registry:
                     "description": "明确标识的离线模拟模板，仅用于演示。",
                 },
             )
+        from .builtin import seed_builtin_templates
+
+        seed_builtin_templates(self, owner_id)
         return {"models": self.models(owner_id), "demo_workflow": demo}
 
     def bootstrap(self, owner_id):

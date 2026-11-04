@@ -229,7 +229,7 @@ wheels = [
 
 [[package]]
 name = "colab-gpu-studio"
-version = "0.1.7"
+version = "0.1.28"
 source = { editable = "." }
 dependencies = [
     { name = "alembic" },

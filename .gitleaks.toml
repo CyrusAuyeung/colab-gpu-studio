@@ -1,0 +1,12 @@
+title = "Colab GPU Studio secret scanning"
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Public workflow identifier, not an API key"
+condition = "AND"
+targetRules = ["generic-api-key"]
+regexTarget = "secret"
+regexes = ['^krea2-moss-dual-t2i$']
+paths = ['api/app/gpu/templates/builtin/(catalog|krea2-moss-dual-t2i-1\.0\.0)\.json$']
