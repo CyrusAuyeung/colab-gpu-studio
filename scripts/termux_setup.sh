@@ -34,21 +34,32 @@ cd "$ROOT_DIR"
 if ! command -v pkg >/dev/null 2>&1; then
   echo "提示：未检测到 Termux pkg 命令，将尝试使用当前系统 Python 环境运行。"
 else
-  echo "[1/4] 正在安装 Termux 预编译扩展包 (python-cryptography, python-pillow) 与编译工具..."
+  echo "[1/4] 正在安装系统基础与预编译扩展包 (python, python-cryptography, python-pillow)..."
   pkg update -y
-  pkg install -y python python-pip python-cryptography python-pillow rust clang make pkg-config libffi openssl git
+  pkg install -y python python-pip python-cryptography python-pillow git openssl libffi
 fi
 
 if [ ! -x ".venv/bin/python" ] || ! grep -q "include-system-site-packages = true" ".venv/pyvenv.cfg" 2>/dev/null; then
   rm -rf .venv
-  echo "[2/4] 正在创建本地 Python 虚拟环境（复用 Termux 预编译扩展）..."
+  echo "[2/4] 正在创建本地 Python 虚拟环境（复用系统预编译扩展）..."
   python3 -m venv --system-site-packages .venv
 fi
 
-echo "[3/4] 正在安装 Python 依赖（开启 --no-build-isolation 免除重复构建隔离环境）..."
-./.venv/bin/pip install --upgrade pip setuptools wheel cffi maturin typing-extensions
-grep -Ev '^(psycopg|cryptography==|pillow==)' requirements.lock > .requirements-termux.txt
-./.venv/bin/pip install --no-build-isolation -r .requirements-termux.txt
+echo "[3/4] 正在安装 Python 依赖（使用 Termux 专用二进制轮子仓库，无需现场编译）..."
+./.venv/bin/pip install --upgrade pip
+
+# Clean requirements for Termux:
+# 1. psycopg is postgres driver, not needed for SQLite
+# 2. cryptography and pillow are already provided by Termux pkg
+# 3. argon2-cffi was legacy unused dependency
+grep -Ev '^(psycopg|cryptography==|pillow==|argon2)' requirements.lock > .requirements-termux.txt
+
+# Use TUR PyPI index so pydantic-core and other native extensions download precompiled aarch64 wheels directly
+./.venv/bin/pip install \
+  --extra-index-url https://termux-user-repository.github.io/pypi/ \
+  --prefer-binary \
+  -r .requirements-termux.txt
+
 rm -f .requirements-termux.txt
 
 echo "[4/4] 启动 Colab GPU Studio..."

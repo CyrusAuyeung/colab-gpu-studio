@@ -11,9 +11,7 @@ anyio==4.16.0
     #   httpx
     #   starlette
     #   watchfiles
-argon2-cffi==25.1.0
     # via colab-gpu-studio
-argon2-cffi-bindings==26.1.0
     # via argon2-cffi
 certifi==2026.10.23
     # via
