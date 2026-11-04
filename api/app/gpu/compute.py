@@ -1,0 +1,306 @@
+"""Compute contracts and deterministic local doubles for GPU Studio."""
+
+from __future__ import annotations
+
+import os
+from dataclasses import dataclass
+from typing import Protocol
+
+
+class ComputeError(RuntimeError):
+    """Safe, user-facing compute failure."""
+
+
+class ProviderUnavailable(ComputeError):
+    """The provider is disabled or not configured."""
+
+
+class ComputeProvider(Protocol):
+    def list_specs(self) -> list[dict]: ...
+    def create(self, spec: dict, request_id: str, job_id: str, runtime_id: str) -> dict: ...
+    def inspect(self, handle: dict) -> dict: ...
+    def delete(self, handle: dict) -> bool: ...
+
+
+class GPUExecutor(Protocol):
+    def start(self, handle: dict, job: dict, execution_id: str) -> dict: ...
+    def poll(self, handle: dict, job: dict) -> dict: ...
+
+
+@dataclass(frozen=True)
+class GpuConfig:
+    enabled: bool = True
+    real_enabled: bool = False
+    max_runtime_minutes: int = 30
+    daily_units: float = 10.0
+    monthly_units: float = 100.0
+    unit_rate: float | None = None
+    max_job_units: float = 5.0
+    create_retries: int = 2
+    create_timeout_seconds: float = 30.0
+    cleanup_retry_base_seconds: float = 2.0
+    cleanup_retry_max_seconds: float = 300.0
+    claim_ttl_seconds: float = 120.0
+    spec_allowlist: tuple[str, ...] = ()
+
+    @staticmethod
+    def _bool(name: str, default: bool) -> bool:
+        value = os.getenv(name)
+        return default if value is None else value.strip().lower() in {"1", "true", "yes", "on"}
+
+    @staticmethod
+    def _number(name: str, default: float) -> float:
+        value = os.getenv(name)
+        if value is None or not value.strip():
+            return default
+        try:
+            return float(value)
+        except ValueError as exc:
+            raise ValueError(f"{name} must be numeric") from exc
+
+    @classmethod
+    def from_env(cls) -> "GpuConfig":
+        max_runtime = int(cls._number("GPU_MAX_RUNTIME_MINUTES", 30))
+        retries = int(cls._number("GPU_CREATE_RETRIES", 2))
+        if max_runtime <= 0 or retries < 0:
+            raise ValueError("GPU runtime must be positive and retries non-negative")
+        rate_text = os.getenv("GPU_UNIT_RATE", "").strip()
+        allowlist = tuple(
+            item.strip() for item in os.getenv("GPU_SPEC_ALLOWLIST", "").split(",") if item.strip()
+        )
+        return cls(
+            enabled=cls._bool("GPU_ENABLED", True),
+            real_enabled=cls._bool("GPU_REAL_ENABLED", False),
+            max_runtime_minutes=max_runtime,
+            daily_units=cls._number("GPU_DAILY_UNITS", 10),
+            monthly_units=cls._number("GPU_MONTHLY_UNITS", 100),
+            unit_rate=None if not rate_text else float(rate_text),
+            max_job_units=cls._number("GPU_MAX_JOB_UNITS", 5),
+            create_retries=retries,
+            create_timeout_seconds=cls._number("GPU_CREATE_TIMEOUT_SECONDS", 30),
+            cleanup_retry_base_seconds=max(0.0, cls._number("GPU_CLEANUP_RETRY_BASE_SECONDS", 2)),
+            cleanup_retry_max_seconds=max(0.0, cls._number("GPU_CLEANUP_RETRY_MAX_SECONDS", 300)),
+            claim_ttl_seconds=max(1.0, cls._number("GPU_CLAIM_TTL_SECONDS", 120)),
+            spec_allowlist=allowlist,
+        )
+
+
+class MockColabProvider:
+    """Explicit fake provider. It never makes network calls."""
+
+    is_mock = True
+    _runtimes: dict[str, dict] = {}
+    _deleted: set[str] = set()
+
+    def __init__(
+        self,
+        *,
+        fail_create_times: int = 0,
+        fail_delete_times: int = 0,
+        create_error: Exception | None = None,
+        faults: dict | None = None,
+    ):
+        faults = faults or {}
+        self.fail_create_times = int(faults.get("create", fail_create_times))
+        self.fail_delete_times = int(faults.get("delete", fail_delete_times))
+        self.create_error = create_error or ComputeError("mock provider create failure")
+        self.create_calls = self.inspect_calls = self.delete_calls = 0
+        # These registries intentionally live at module/class scope: the
+        # default factory may construct a fresh adapter on every short tick.
+        # A handle, not an adapter instance, is the source of truth for mock
+        # recovery just as a provider API would be after process restart.
+        self.deleted = []
+        self.handles = self._runtimes
+
+    def list_specs(self) -> list[dict]:
+        return [{"name": "mock-colab", "provider": "mock", "simulated": True}]
+
+    def create(self, spec: dict, request_id: str, job_id: str, runtime_id: str) -> dict:
+        self.create_calls += 1
+        if self.create_calls <= self.fail_create_times:
+            raise self.create_error
+        name = f"mock-runtime-{runtime_id}"
+        handle = {
+            "runtime_name": name,
+            "operation_name": f"mock-op-{request_id}",
+            "ready": True,
+            "deleted": False,
+            "mock": True,
+            "runtime_id": runtime_id,
+            "request_id": request_id,
+            "job_id": job_id,
+        }
+        self._runtimes[name] = handle
+        self._deleted.discard(name)
+        return dict(handle)
+
+    def inspect(self, handle: dict) -> dict:
+        self.inspect_calls += 1
+        name = handle.get("runtime_name")
+        if name in self._deleted or name not in self._runtimes:
+            return {"ready": False, "deleted": True, "runtime_name": name, "mock": True}
+        return {**self._runtimes[name], "ready": True, "deleted": False}
+
+    def delete(self, handle: dict) -> bool:
+        self.delete_calls += 1
+        if self.delete_calls <= self.fail_delete_times:
+            return False
+        name = handle.get("runtime_name", "")
+        if not handle.get("mock") or not name.startswith("mock-runtime-"):
+            raise ComputeError("refusing to delete an unverified runtime")
+        if name not in self._deleted:
+            self._deleted.add(name)
+            self.deleted.append(name)
+        self._runtimes.pop(name, None)
+        return True
+
+
+class MockGPUExecutor:
+    """Deterministic executor; execution IDs make start idempotent across restart."""
+
+    is_mock = True
+    _executions: dict[str, dict] = {}
+
+    def __init__(
+        self,
+        *,
+        polls_before_complete: int = 0,
+        fail_on_start: bool = False,
+        fail_on_poll: bool = False,
+        output: bytes | None = None,
+        faults: dict | None = None,
+    ):
+        faults = faults or {}
+        self.polls_before_complete = int(faults.get("polls_before_complete", polls_before_complete))
+        self.fail_on_start = bool(faults.get("start", fail_on_start))
+        self.fail_on_poll = bool(faults.get("poll", fail_on_poll))
+        # Valid 1x1 PNG so the independent asset validator accepts the mock
+        # artifact; the metadata and filename also visibly identify MOCK.
+        self.output = output or __import__("base64").b64decode(
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+        )
+        self.started: list[str] = []
+        self.start_calls = self.poll_calls = 0
+        self.outputs: list[dict] = []
+        self.max_concurrent = 0
+        self._active = 0
+
+    def start(self, handle: dict, job: dict, execution_id: str) -> dict:
+        self.start_calls += 1
+        if execution_id in self._executions:
+            return {"execution_id": execution_id, "idempotent": True}
+        if self.fail_on_start:
+            raise ComputeError("mock executor start failure")
+        self._executions[execution_id] = {
+            "remaining": self.polls_before_complete,
+            "failed": False,
+            "output": self.output,
+        }
+        self.started.append(execution_id)
+        self._active += 1
+        self.max_concurrent = max(self.max_concurrent, self._active)
+        return {"execution_id": execution_id, "mock": True}
+
+    def poll(self, handle: dict, job: dict) -> dict:
+        self.poll_calls += 1
+        state = self._executions.get(job.get("execution_id"))
+        if state is None:
+            raise ComputeError("mock execution is not recoverable")
+        if self.fail_on_poll:
+            state["failed"] = True
+        if state["failed"]:
+            self._active = max(0, self._active - 1)
+            return {
+                "state": "failed",
+                "outputs": [],
+                "error_code": "gpu_execution_failed",
+                "message": "mock executor failure",
+            }
+        if state["remaining"] > 0:
+            state["remaining"] -= 1
+            return {"state": "running", "outputs": []}
+        self._active = max(0, self._active - 1)
+        output = {
+            "filename": "mock-output.png",
+            "content": state["output"],
+            "mime": "image/png",
+            "metadata": {"mock": True, "label": "MOCK"},
+        }
+        self.outputs.append(output)
+        return {"state": "completed", "outputs": [output]}
+
+
+class DisabledProvider:
+    is_mock = False
+
+    def __init__(self, reason: str = "real GPU provider is disabled"):
+        self.reason = reason
+
+    def list_specs(self) -> list[dict]:
+        return []
+
+    def create(self, spec: dict, request_id: str, job_id: str, runtime_id: str) -> dict:
+        raise ProviderUnavailable(self.reason)
+
+    def inspect(self, handle: dict) -> dict:
+        raise ProviderUnavailable(self.reason)
+
+    def delete(self, handle: dict) -> bool:
+        raise ProviderUnavailable(self.reason)
+
+
+class DisabledExecutor:
+    def start(self, handle: dict, job: dict, execution_id: str) -> dict:
+        raise ProviderUnavailable("real GPU executor is disabled")
+
+    def poll(self, handle: dict, job: dict) -> dict:
+        raise ProviderUnavailable("real GPU executor is disabled")
+
+
+def default_provider_factory(
+    job: dict, config: GpuConfig | None = None, *, store=None, owner_id: str | None = None
+):
+    config = config or GpuConfig.from_env()
+    name = job.get("provider") or (job.get("execution_policy") or {}).get("provider", "mock")
+    if name == "mock":
+        return MockColabProvider()
+    if name == "colab" and not config.real_enabled:
+        return DisabledProvider("real GPU provider is disabled or unconfigured")
+    if name == "colab":
+        try:
+            from .colab import GoogleColabProvider
+        except (ImportError, ModuleNotFoundError):
+            return DisabledProvider("real Colab provider is unavailable")
+        if hasattr(GoogleColabProvider, "from_environment"):
+            return GoogleColabProvider.from_environment(store=store, owner_id=owner_id)
+        return GoogleColabProvider(store, owner_id)
+    return DisabledProvider(f"unknown GPU provider: {name}")
+
+
+def default_executor_factory(
+    job: dict, config: GpuConfig | None = None, *, store=None, owner_id: str | None = None
+):
+    config = config or GpuConfig.from_env()
+    name = job.get("provider") or (job.get("execution_policy") or {}).get("provider", "mock")
+    if name == "mock":
+        return MockGPUExecutor()
+    if name == "colab" and config.real_enabled:
+        try:
+            from .mcp import MCPGPUExecutor
+        except (ImportError, ModuleNotFoundError):
+            return DisabledExecutor()
+        return MCPGPUExecutor.from_environment(store=store, owner_id=owner_id)
+    return DisabledExecutor()
+
+
+__all__ = [
+    "ComputeError",
+    "ProviderUnavailable",
+    "ComputeProvider",
+    "GPUExecutor",
+    "GpuConfig",
+    "MockColabProvider",
+    "MockGPUExecutor",
+    "default_provider_factory",
+    "default_executor_factory",
+]

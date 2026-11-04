@@ -1,0 +1,9 @@
+{
+  "manifest_version": 1,
+  "model_id": "demo-mock",
+  "parameters": {
+    "prompt": {"type": "string", "default": "Atelier demo", "binding": {"node": "1", "input": "text"}},
+    "steps": {"type": "integer", "default": 4, "min": 1, "max": 8, "binding": {"node": "1", "input": "steps"}},
+    "seed": {"type": "integer", "default": 1, "min": -1, "max": 2147483647, "binding": {"node": "1", "input": "seed"}}
+  }
+}

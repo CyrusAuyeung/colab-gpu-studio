@@ -1,0 +1,3 @@
+# Preserve byte-exact third-party source evidence and license texts.
+templates/research/sources/** -whitespace
+templates/research/original/** -whitespace
