@@ -83,7 +83,11 @@ def main() -> None:
 
     child_env = os.environ.copy()
     child_env.update(config)
-    child_env["PYTHONPATH"] = str(root / "api")
+    site_pkgs = root / "runtime" / "site-packages"
+    if site_pkgs.is_dir():
+        child_env["PYTHONPATH"] = f"{root / 'api'}{os.pathsep}{site_pkgs}"
+    else:
+        child_env["PYTHONPATH"] = str(root / "api")
     child_env["PYTHONDONTWRITEBYTECODE"] = "1"
 
     py = sys.executable
