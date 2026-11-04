@@ -34,20 +34,26 @@ cd "$ROOT_DIR"
 if ! command -v pkg >/dev/null 2>&1; then
   echo "提示：未检测到 Termux pkg 命令，将尝试使用当前系统 Python 环境运行。"
 else
-  echo "[1/4] 正在检查并安装 Termux 依赖包 (python, rust, clang, libjpeg-turbo, zlib)..."
+  echo "[1/4] 正在安装 Termux 预编译 Python 原生扩展包（免去手机慢速编译 Rust）..."
   pkg update -y
-  pkg install -y python rust clang make pkg-config libjpeg-turbo zlib libffi openssl git
+  pkg install -y python python-pip python-cryptography python-pillow rust clang make pkg-config libffi openssl git
+  pkg install -y python-pydantic-core 2>/dev/null || true
 fi
 
-if [ ! -x ".venv/bin/python" ]; then
+if [ ! -x ".venv/bin/python" ] || ! grep -q "include-system-site-packages = true" ".venv/pyvenv.cfg" 2>/dev/null; then
   rm -rf .venv
-  echo "[2/4] 正在创建本地 Python 虚拟环境 ($ROOT_DIR/.venv)..."
-  python3 -m venv .venv
+  echo "[2/4] 正在创建本地 Python 虚拟环境（复用 Termux 预编译扩展）..."
+  python3 -m venv --system-site-packages .venv
 fi
 
-echo "[3/4] 正在安装 Python 依赖..."
-grep -v '^psycopg' requirements.lock > .requirements-termux.txt
-./.venv/bin/pip install --upgrade pip
+echo "[3/4] 正在安装纯 Python 依赖..."
+# Skip packages already provided by Termux prebuilt system packages (cryptography, pillow, pydantic-core) and unused psycopg
+SKIP_REGEX='^(psycopg|cryptography==|pillow==)'
+if python3 -c "import pydantic_core" 2>/dev/null; then
+  SKIP_REGEX='^(psycopg|cryptography==|pillow==|pydantic==|pydantic_core==|pydantic-settings==)'
+  ./.venv/bin/pip install --upgrade "pydantic>=2.6,<3" "pydantic-settings>=2.6,<3" --no-deps || true
+fi
+grep -Ev "$SKIP_REGEX" requirements.lock > .requirements-termux.txt
 ./.venv/bin/pip install -r .requirements-termux.txt
 rm -f .requirements-termux.txt
 
