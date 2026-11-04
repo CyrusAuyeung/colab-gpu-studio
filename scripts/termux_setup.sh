@@ -34,10 +34,9 @@ cd "$ROOT_DIR"
 if ! command -v pkg >/dev/null 2>&1; then
   echo "提示：未检测到 Termux pkg 命令，将尝试使用当前系统 Python 环境运行。"
 else
-  echo "[1/4] 正在安装 Termux 预编译 Python 原生扩展包（免去手机慢速编译 Rust）..."
+  echo "[1/4] 正在安装 Termux 预编译扩展包 (python-cryptography, python-pillow) 与编译工具..."
   pkg update -y
   pkg install -y python python-pip python-cryptography python-pillow rust clang make pkg-config libffi openssl git
-  pkg install -y python-pydantic-core 2>/dev/null || true
 fi
 
 if [ ! -x ".venv/bin/python" ] || ! grep -q "include-system-site-packages = true" ".venv/pyvenv.cfg" 2>/dev/null; then
@@ -46,15 +45,10 @@ if [ ! -x ".venv/bin/python" ] || ! grep -q "include-system-site-packages = true
   python3 -m venv --system-site-packages .venv
 fi
 
-echo "[3/4] 正在安装纯 Python 依赖..."
-# Skip packages already provided by Termux prebuilt system packages (cryptography, pillow, pydantic-core) and unused psycopg
-SKIP_REGEX='^(psycopg|cryptography==|pillow==)'
-if python3 -c "import pydantic_core" 2>/dev/null; then
-  SKIP_REGEX='^(psycopg|cryptography==|pillow==|pydantic==|pydantic_core==|pydantic-settings==)'
-  ./.venv/bin/pip install --upgrade "pydantic>=2.6,<3" "pydantic-settings>=2.6,<3" --no-deps || true
-fi
-grep -Ev "$SKIP_REGEX" requirements.lock > .requirements-termux.txt
-./.venv/bin/pip install -r .requirements-termux.txt
+echo "[3/4] 正在安装 Python 依赖（开启 --no-build-isolation 免除重复构建隔离环境）..."
+./.venv/bin/pip install --upgrade pip setuptools wheel cffi maturin typing-extensions
+grep -Ev '^(psycopg|cryptography==|pillow==)' requirements.lock > .requirements-termux.txt
+./.venv/bin/pip install --no-build-isolation -r .requirements-termux.txt
 rm -f .requirements-termux.txt
 
 echo "[4/4] 启动 Colab GPU Studio..."
