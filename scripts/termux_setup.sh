@@ -68,4 +68,5 @@ if command -v termux-wake-lock >/dev/null 2>&1; then
   echo "已开启 Termux WakeLock 防止后台休眠。"
 fi
 
+export PYTHONPATH="$ROOT_DIR/api${PYTHONPATH:+:$PYTHONPATH}"
 exec ./.venv/bin/python -m app.launcher --host 127.0.0.1 --port 8788
