@@ -1,46 +1,45 @@
-# Google OAuth 与 Drive 配置
+# Google OAuth 与 Drive 配置指南
 
-## 在网页配置（推荐）
+本项目不会内置任何人的 Google 账号或密钥。要想让后端替你去开 Colab GPU、读写 Google Drive 里的模型缓存，你需要用自己的 Google Cloud 项目创建一个 OAuth 客户端。
 
-打开 https://studio.example.com → 设置 → Google OAuth 应用配置。按页面指引在自己的 Google Cloud 项目创建 Web 应用客户端，导入下载的客户端 JSON，勾选确认并保存。Client Secret 加密存在后端；浏览器不会持久保存，也不需要 SSH。
+## 第一步：在 Google Cloud 创建客户端 JSON
 
-固定回调：`https://studio.example.com/api/gpu/auth/google/callback`
+1. 打开 [Google Cloud Console](https://console.cloud.google.com/)，新建或选择一个个人项目。
+2. 在“API 和服务 → 库”里，搜索并启用 **Google Drive API**（如果你的账号列表里有 **Colaboratory API** 也一并启用）。
+3. 进入“Google Auth Platform / OAuth 同意屏幕”：
+   - 如果设为“测试（Testing）”模式，务必把你自己的 Google 邮箱加进 **测试用户（Test users）** 列表。
+   - 在数据访问权限（Scopes）里添加：
+     - `https://www.googleapis.com/auth/colaboratory`（用于申请和管理 Colab 运行时）
+     - `https://www.googleapis.com/auth/drive.file`（仅允许访问本应用在 Drive 里创建的缓存目录和作品，不会扫你网盘里的其他私人文件）
+4. 进入“客户端（Clients）”创建凭据，类型必须选 **Web 应用（Web application）**：
+   - **已获授权的 JavaScript 来源**：填你的网站地址，比如 `https://studio.example.com`（本地测试填 `http://127.0.0.1:8788`）
+   - **已获授权的重定向 URI**：必须精确填写 `https://studio.example.com/api/gpu/auth/google/callback`（把域名换成你实际配置的 `SITE_URL`）
+5. 创建好之后，点击下载客户端的 **JSON 文件**。
 
-JavaScript来源（如需填写）：`https://studio.example.com`
+## 第二步：直接在网页上导入并连接（推荐）
 
-客户端类型必须是 Web，不能上传服务账号或桌面应用JSON。Google Auth Platform 测试模式须把自己的 Google 邮箱加入测试用户；“数据访问权限”添加下方 Colab 与 drive.file scopes。下载JSON的 redirect_uris 必须包含上述完整回调。
+不用连 SSH 改配置，直接在网页端就能绑好：
 
-保存后分别点击“连接 Google Colab”和“连接 Google Drive”，跳转Google授权。只有本人在Google确认后才是已连接；导入客户端不是账户授权，更不会启用GPU。更换已连接的OAuth客户端前需先断开Colab/Drive。
+1. 登录你的 Colab GPU Studio 网页 → 进入 **设置** 页面。
+2. 在 **Google OAuth 应用配置** 卡片里，上传刚才下载的客户端 JSON 文件，勾选确认并保存（Client Secret 会用 `.env` 里的 `ENCRYPTION_KEY` 加密存进数据库，前端不会回显）。
+3. 保存成功后，在下方分别点击 **连接 Google Colab** 和 **连接 Google Drive**，跳转到 Google 完成授权。
+4. 两个状态都变成“已连接”后，点一下 **检查可用 GPU**，就能看到你当前 Google 账号能用哪些显卡（比如 T4、L4、A100）了。
 
-以下环境变量方式仍可作为运维备用；Web配置优先。回调始终由本站SITE_URL计算，不接受浏览器或客户端JSON指定其他回调。
+> **备用方式**：如果你不喜欢网页导入，也可以把 `GPU_GOOGLE_CLIENT_ID`、`GPU_GOOGLE_CLIENT_SECRET`、`GPU_GOOGLE_REDIRECT_URI` 直接填进服务器的 `.env` 文件里再重启容器。
 
+## 第三步：开启真实 GPU 开关与预算保护
 
-## 尚需用户本人完成
+授权连上之后，默认还是不会开真 GPU 的。确认要开始跑图前，编辑服务器的 `.env`：
 
-本项目没有预置 Google 账户、refresh token 或 OAuth Client Secret。没有本人授权，不能核实套餐、GPU 库存、计算单元或真实 Drive 文件。准备完成之前保持 `GPU_REAL_ENABLED=0`。
+```ini
+GPU_REAL_ENABLED=1
+GPU_STORAGE=drive
+# 填写每分钟消耗的 CU 估算值（例如 L4 约 0.027，T4 约 0.019），不填正数不允许跑真机
+GPU_UNIT_RATE=0.027
+GPU_DAILY_UNITS=10
+GPU_MONTHLY_UNITS=100
+GPU_MAX_JOB_UNITS=5
+GPU_MAX_RUNTIME_MINUTES=60
+```
 
-1. Google Cloud 创建/选择个人项目，启用 Colab API (`colaboratory.googleapis.com`) 与 Google Drive API。
-2. 配置 OAuth consent screen，测试模式添加自己的 Google 账号；发布/敏感 scopes 验证遵循 Google 当前要求。测试模式 refresh token 生命周期可能受限。
-3. 创建 Web application OAuth client。授权回调必须精确为 `https://你的独立域名/api/gpu/auth/google/callback`，必须对应当前部署站点。
-4. 服务器私密 `.env` 设置 `GPU_GOOGLE_CLIENT_ID`、`GPU_GOOGLE_CLIENT_SECRET`、`GPU_GOOGLE_REDIRECT_URI`；保留原 ENCRYPTION_KEY，重建三服务加载配置。
-5. 网页设置页分别连接 Colab 与 Drive。
-
-Scopes：
-
-- Colab：`https://www.googleapis.com/auth/colaboratory`，必须个人付费权益对应用户，不默认 service account 继承个人计算单元。
-- Drive：`https://www.googleapis.com/auth/drive.file`，仅管理应用创建/获授文件，不承诺能遍历整个 Drive。
-
-OAuth start 是已认证 POST，后端返回授权 URL；PKCE verifier 与 token 加密存库，state 有期限且仅可使用一次。Callback 根据服务端 state 恢复 owner，不通过前端传 refresh token。
-
-## 最小验证顺序
-
-1. 先 GET `/api/gpu/compute/subscription`、`/api/gpu/compute/specs?provider=colab`；这些不创建 GPU。
-2. 为目标机型填写可信当前估算 `GPU_UNIT_RATE`（每分钟点数），设置日/月/单任务与时长限额。没有可靠费率就保持关闭。
-3. 明确启用 `GPU_REAL_ENABLED=1`，POST `/api/gpu/admin/compute/smoke`，带 `Idempotency-Key` 与 `{confirmed:true,spec:{key:真实规格}}`。最长五分钟，走与生成相同的预算/租约/清理服务。
-4. 查看任务真实 CUDA 诊断输出，确认租约 deleted，再到 Google 账户核对实际消费。未确认删除时 UI 为 cleanup_pending，不重新开下一台。
-5. 设置 `GPU_STORAGE=drive`，用小文件验证上传、回读校验和权限；不调用无头 drive.mount()。只有通过回读验证才完成。
-6. 完成真实模型许可、固定权重和硬件审查后才做一张最低成本 MOSS 图。
-
-## 安全
-
-本站登录 Bearer token 不等于 Google token。Google access/refresh token 不发浏览器，不写 Notebook、Drive、源代码、日志和任务事件。运行时短期代理 token 仅后端内部使用。默认不下载 gated 权重，也不会把你的 Hugging Face 私密 token 自动传给 Colab；私有/gated 模型需要单独合规方案。
+改完重启服务，就可以去跑一次 CUDA 冒烟或激活内置工作流了。每次任务跑完，系统都会校验作品并自动删掉 Colab runtime。

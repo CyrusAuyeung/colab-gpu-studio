@@ -1,26 +1,18 @@
-# 模型与工作流接入
+# 新增自定义模型与工作流
 
-本源码包不导出生产数据库，干净启动保留 `demo-mock` 演示，并额外为当前用户自动注册 4 套真实工作流草稿；只有 Mock 能直接运行，真实模型默认禁用。详见 `BUILTIN_WORKFLOWS.md`。
+除了仓库自带的 4 套内置工作流外，你也可以把自己常用的 ComfyUI 工作流导进来，前端会根据你写的 `manifest` 自动生成手机端表单，不需要改前端代码。
 
-## 接入步骤
+## 导入新工作流的步骤
 
-1. 核对模型及 LoRA 的来源、许可、设备要求。
-2. 固定 ComfyUI/依赖仓库的 commit。
-3. 准备 API graph、目标节点 object_info 与 manifest。
-4. 固定权重 repo/revision/文件名/SHA-256。
-5. 从工作流页或管理员 API 导入 bundle。
-6. 通过静态校验、人工审查和预算核验。
-7. 自行授权一次最小真实冒烟并核验输出。
-8. 确认 runtime 删除后验收并发布。
+1. **导出 API 格式 JSON**：在本地或云端 ComfyUI 网页里打开开发者模式，把工作流导出为 API 格式（即每个节点带 `class_type` 和 `inputs` 的字典结构），并从 `/object_info` 保存用到的节点定义。
+2. **固定版本与权重**：确认所需的 ComfyUI commit，以及每个模型权重在 Hugging Face 上的 `repo_id`、`revision`（40位 commit）、文件名和 `sha256`。
+3. **编写 Manifest**：定义网页表单需要暴露给你的参数（如 `prompt`、`width`、`height`、`seed`、参考图或模式切换），以及它们绑定到哪个节点的哪个输入字段。格式可以直接抄 `api/app/gpu/templates/builtin/` 里的现成 JSON。
+4. **导入并审核启用**：在网页“工作流”页粘贴或上传组装好的 JSON bundle 导入为草稿，然后按照 `WORKFLOW_REVIEW.md` 的步骤走完校验、审核、冒烟和发布。
 
-具体接口和发布条件见 `WORKFLOW_REVIEW.md`，以当前代码检查为准。不要伪造 smoke 记录、复制他人的发布凭据或跳过许可审核。
-
-## 公共来源
+## 常用上游开源地址
 
 - ComfyUI：https://github.com/comfyanonymous/ComfyUI
-- 官方工作流模板：https://github.com/Comfy-Org/workflow_templates
-- MOSS：https://huggingface.co/OpenMOSS-Team/MOSS-Image-SFT
-- Krea：https://huggingface.co/krea/Krea-2-Turbo
-- H3：https://huggingface.co/MiniMaxAI/MiniMax-H3
-
-第三方模型元数据和许可证会变化，请使用前自行核验。当前 4 套纯配置已纳入内置模板目录，审批与实测记录未导出；增加其他工作流时仍只导出纯配置，不能上传整库。
+- ComfyUI 官方工作流模板：https://github.com/Comfy-Org/workflow_templates
+- MOSS-Image：https://huggingface.co/OpenMOSS-Team/MOSS-Image-SFT
+- Krea-2：https://huggingface.co/Comfy-Org/Krea-2
+- MiniMax-H3：https://huggingface.co/Comfy-Org/MiniMax-H3

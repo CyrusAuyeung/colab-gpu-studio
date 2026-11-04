@@ -1,10 +1,12 @@
-# 真实模型审查、GPU 冒烟与发布流程
+# 真实模型审核、冒烟测试与发布流程
 
-本流程把“模型永远 disabled、又必须先 smoke 才能 enabled”的闭环拆成三个不可伪造的服务器状态：人工审查、受预算保护的冒烟任务、以及基于任务结果的验收。
+为了防止没验证过的工作流或来路不明的节点直接开 GPU 烧钱，系统要求所有真实模型和工作流走完 **“审核 → 真实冒烟 → 验收 → 发布”** 四步后才能在创作页正式使用。
 
-## 1. 模型人工审查
+以下是管理员 API 的具体调用顺序（所有接口都需要管理员登录态）：
 
-管理员调用：
+## 1. 审核模型
+
+确认模型的仓库来源、40 位 commit 版本号、许可证和硬件要求无误后，调用：
 
 ```http
 POST /api/gpu/models/{model-row-id}/review
@@ -13,84 +15,62 @@ Content-Type: application/json
 {"confirmed": true, "license_accepted": true}
 ```
 
-服务端重新检查已登记模型的：
+> 这里的 `{model-row-id}` 是 `GET /api/gpu/models` 返回列表里的记录 `id`。这一步只记录“已审核”，还不会把模型设为启用。
 
-- `source` 必须是 Hugging Face 或 GitHub 的 HTTPS 地址；
-- `revision` 必须是固定 40 位 commit；
-- `license` 非空；
-- `resource_profile` 至少含有限、正数且在合理范围内的资源值。
+## 2. 审核工作流
 
-审查成功只写入 `review_approved`、`license_accepted` 等审查记录，**不会**设置 `enabled=true`。Agent token 不能调用这些管理员接口。
-
-## 2. 工作流人工审查
-
-模型审查成功后，管理员调用：
+先在网页“工作流”页面点一下 **校验**（或者调 `POST /api/gpu/workflows/{workflow-id}/validate`），然后调用：
 
 ```http
 POST /api/gpu/workflows/{workflow-id}/review
+Content-Type: application/json
+
 {"confirmed": true}
 ```
 
-工作流必须仍是 `draft` 或 `validated`。服务端重新运行 `validate_manifest`，然后检查：
+后端会自动检查：
+- `comfyui_commit` 是否为固定的 40 位 commit；
+- `custom_nodes` 是否为空，或者是否在 `runtime_worker.py` 已经审计锁定的白名单里；
+- 所有 `weight_files` 权重是否都有明确的 Hugging Face 仓库、40 位 revision 和 64 位 SHA-256 校验值；
+- 节点图里是否包含危险节点。
 
-- `manifest.dependencies.comfyui_commit` 是固定 40 位 commit；
-- `manifest.dependencies.custom_nodes` 必须为空或命中 `runtime_worker.py` 中固定仓库/commit 审查名单；
-- 每个 `weight_files` 都有合法 Hugging Face `repo_id`、无路径穿越的 `filename`/`target`、40 位 revision 和 64 位 SHA-256；
-- 图中所有 `class_type` 都进入服务器生成的 `node_allowlist`，危险节点直接拒绝。
+## 3. 跑一次受预算保护的真实冒烟 (`real-smoke`)
 
-审查结果写回工作流的 manifest 和 `review_approved`，但不会把工作流发布，也不会把 manifest 的 state 改成 `published`。依赖会同时规范化到适配器使用的顶层 `comfyui_commit`、`comfy_commit` 和 `weight_files` 字段。
-
-## 3. 受预算保护的真实冒烟入队
-
-审查完成后，管理员提交：
+审核通过后，发起一次小规模真机测试（限时最多 5 分钟）：
 
 ```http
 POST /api/gpu/workflows/{workflow-id}/real-smoke
-Idempotency-Key: real-smoke-2026-...
+Idempotency-Key: smoke-自定义唯一键
 Content-Type: application/json
 
 {
   "confirmed": true,
-  "project_id": "project-id",
+  "project_id": "你的本地项目ID",
   "params": {"prompt": "test"},
   "asset_ids": [],
   "spec": {"key": {"variant": "GPU", "accelerator": "T4", "shape": "STANDARD"}}
 }
 ```
 
-入队前服务端按以下顺序检查：
+> 如果是图生视频或参考图工作流，记得把参考图上传到该项目，并在 `params` / `asset_ids` 里传对应的素材 ID，显卡 `accelerator` 按需改成 `"L4"` 等你账号支持的规格。
 
-1. `GPU_REAL_ENABLED`、正费率、单任务/日/月预算；预算超限时**不会创建 job**；
-2. Google Colab OAuth 已连接；
-3. 通过真实 `list_specs()` 获取当前账户规格，且提交的 key 必须精确匹配 `eligible=true` 的 GPU 规格；
-4. 工作流和模型审查仍有效，manifest 与参数可验证，项目和素材归属正确；
-5. 最长运行时间固定为 `min(5, GPU_MAX_RUNTIME_MINUTES)`。
+提交后，Worker 会先在 CPU runtime 把环境和模型缓存到你的 Google Drive（如果还没缓存过），然后开 GPU 跑完出片，最后自动删掉 runtime。
 
-通过后，路由只在 dispatch lock 内用 `Repository.create_job` 持久化原始请求和不可变 snapshot，随后交给 Scheduler。路由不调用 provider 的 create，不直接开机。snapshot 包含已审工作流的发布态运行副本、节点白名单、锁定的 Comfy commit/权重、`workflow_smoke=true`、目标 workflow/model ID 和 `system_smoke=false`。
+## 4. 验收冒烟结果并启用模型 (`accept-smoke`)
 
-相同幂等键可安全重试；不同参数会得到 `IDEMPOTENCY_CONFLICT`。
-
-## 4. 服务器证据验收
-
-GPU 任务结束、输出保存并校验、租约确认删除后，管理员调用：
+等上面的冒烟任务状态变成 `completed`、并且关联的 runtime 租约已经变成 `deleted` 后，调用验收接口：
 
 ```http
 POST /api/gpu/workflows/{workflow-id}/accept-smoke
-{"job_id": "server-job-id", "confirmed": true}
+Content-Type: application/json
+
+{"job_id": "刚才跑完的冒烟任务ID", "confirmed": true}
 ```
 
-服务端只接受同一 owner 的服务器 job，并严格要求：
+后端核对作品哈希和 GPU 诊断记录无误后，会自动把该工作流标记为 `smoke_test_passed=true`，并把对应模型正式设为 **`enabled=true`**。
 
-- `completed`、`provider=colab`、`snapshot.workflow_smoke=true`；
-- `target_workflow_id` 和 `target_model_id` 精确匹配；
-- `output_asset_ids` 非空，每个文件存在且重新计算 SHA-256/size 一致；
-- 所有关联 lease 已是 `deleted`；
-- job/lease 中存在服务器保存的真实 GPU 诊断证据。
+## 5. 正式发布工作流
 
-请求体不接受输出文件、测试结果或其它客户端证据。成功后写入 `smoke_test_passed=true`、`smoke_test_kind=real`，只把 `job.requested_spec` 和服务器 GPU 诊断复制到 `model.tested_compute_specs`，并将模型设为 `enabled=true`。
+最后，在网页“工作流”页点击 **确认发布**（或调用 `POST /api/gpu/workflows/{workflow-id}/publish`，传 `{"confirmed": true}`）。
 
-## 5. 发布边界
-
-冒烟验收不是发布。发布仍必须经过现有 Registry 发布检查和管理员确认；真实模型必须同时具备模型许可审查、工作流审查、真实冒烟验收及固定节点白名单。已发布 workflow 版本不可通过审查或验收接口覆写。
-
-常规正式任务仍应由主 admission 路径根据已审真实模型构造 `state=published`、`reviewed=true` 的后端 snapshot，不能信任客户端 manifest。
+发布完成后，这个版本就会成为当前默认版本，随时可以在手机端“创作”页正常使用了！
