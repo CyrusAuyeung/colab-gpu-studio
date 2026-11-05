@@ -1,0 +1,10 @@
+{
+  "scope": "git tracked and nonignored untracked; static patterns only, not a guarantee",
+  "candidate_count": 180,
+  "sensitive_name_exclusions": [],
+  "findings": [],
+  "license_files": [
+    "LICENSE"
+  ],
+  "production_secret_values_loaded": false
+}

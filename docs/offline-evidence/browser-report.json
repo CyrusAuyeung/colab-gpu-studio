@@ -1,0 +1,503 @@
+{
+  "page_errors": [],
+  "external_requests": [],
+  "screens": [
+    {
+      "page": "创作",
+      "theme": "dark",
+      "width": 360,
+      "scroll": 360,
+      "height": 844
+    },
+    {
+      "page": "任务",
+      "theme": "dark",
+      "width": 360,
+      "scroll": 360,
+      "height": 844
+    },
+    {
+      "page": "作品",
+      "theme": "dark",
+      "width": 360,
+      "scroll": 360,
+      "height": 844
+    },
+    {
+      "page": "算力",
+      "theme": "dark",
+      "width": 360,
+      "scroll": 360,
+      "height": 844
+    },
+    {
+      "page": "设置",
+      "theme": "dark",
+      "width": 360,
+      "scroll": 360,
+      "height": 844
+    },
+    {
+      "page": "创作",
+      "theme": "dark",
+      "width": 390,
+      "scroll": 390,
+      "height": 844
+    },
+    {
+      "page": "任务",
+      "theme": "dark",
+      "width": 390,
+      "scroll": 390,
+      "height": 844
+    },
+    {
+      "page": "作品",
+      "theme": "dark",
+      "width": 390,
+      "scroll": 390,
+      "height": 844
+    },
+    {
+      "page": "算力",
+      "theme": "dark",
+      "width": 390,
+      "scroll": 390,
+      "height": 844
+    },
+    {
+      "page": "设置",
+      "theme": "dark",
+      "width": 390,
+      "scroll": 390,
+      "height": 844
+    },
+    {
+      "page": "创作",
+      "theme": "dark",
+      "width": 412,
+      "scroll": 412,
+      "height": 844
+    },
+    {
+      "page": "任务",
+      "theme": "dark",
+      "width": 412,
+      "scroll": 412,
+      "height": 844
+    },
+    {
+      "page": "作品",
+      "theme": "dark",
+      "width": 412,
+      "scroll": 412,
+      "height": 844
+    },
+    {
+      "page": "算力",
+      "theme": "dark",
+      "width": 412,
+      "scroll": 412,
+      "height": 844
+    },
+    {
+      "page": "设置",
+      "theme": "dark",
+      "width": 412,
+      "scroll": 412,
+      "height": 844
+    },
+    {
+      "page": "创作",
+      "theme": "dark",
+      "width": 430,
+      "scroll": 430,
+      "height": 844
+    },
+    {
+      "page": "任务",
+      "theme": "dark",
+      "width": 430,
+      "scroll": 430,
+      "height": 844
+    },
+    {
+      "page": "作品",
+      "theme": "dark",
+      "width": 430,
+      "scroll": 430,
+      "height": 844
+    },
+    {
+      "page": "算力",
+      "theme": "dark",
+      "width": 430,
+      "scroll": 430,
+      "height": 844
+    },
+    {
+      "page": "设置",
+      "theme": "dark",
+      "width": 430,
+      "scroll": 430,
+      "height": 844
+    },
+    {
+      "page": "创作",
+      "theme": "dark",
+      "width": 768,
+      "scroll": 768,
+      "height": 844
+    },
+    {
+      "page": "任务",
+      "theme": "dark",
+      "width": 768,
+      "scroll": 768,
+      "height": 844
+    },
+    {
+      "page": "作品",
+      "theme": "dark",
+      "width": 768,
+      "scroll": 768,
+      "height": 844
+    },
+    {
+      "page": "算力",
+      "theme": "dark",
+      "width": 768,
+      "scroll": 768,
+      "height": 844
+    },
+    {
+      "page": "设置",
+      "theme": "dark",
+      "width": 768,
+      "scroll": 768,
+      "height": 844
+    },
+    {
+      "page": "创作",
+      "theme": "dark",
+      "width": 1024,
+      "scroll": 1024,
+      "height": 844
+    },
+    {
+      "page": "任务",
+      "theme": "dark",
+      "width": 1024,
+      "scroll": 1024,
+      "height": 844
+    },
+    {
+      "page": "作品",
+      "theme": "dark",
+      "width": 1024,
+      "scroll": 1024,
+      "height": 844
+    },
+    {
+      "page": "算力",
+      "theme": "dark",
+      "width": 1024,
+      "scroll": 1024,
+      "height": 844
+    },
+    {
+      "page": "设置",
+      "theme": "dark",
+      "width": 1024,
+      "scroll": 1024,
+      "height": 844
+    },
+    {
+      "page": "创作",
+      "theme": "dark",
+      "width": 1440,
+      "scroll": 1440,
+      "height": 844
+    },
+    {
+      "page": "任务",
+      "theme": "dark",
+      "width": 1440,
+      "scroll": 1440,
+      "height": 844
+    },
+    {
+      "page": "作品",
+      "theme": "dark",
+      "width": 1440,
+      "scroll": 1440,
+      "height": 844
+    },
+    {
+      "page": "算力",
+      "theme": "dark",
+      "width": 1440,
+      "scroll": 1440,
+      "height": 844
+    },
+    {
+      "page": "设置",
+      "theme": "dark",
+      "width": 1440,
+      "scroll": 1440,
+      "height": 844
+    },
+    {
+      "page": "创作",
+      "theme": "light",
+      "width": 360,
+      "scroll": 360,
+      "height": 844
+    },
+    {
+      "page": "任务",
+      "theme": "light",
+      "width": 360,
+      "scroll": 360,
+      "height": 844
+    },
+    {
+      "page": "作品",
+      "theme": "light",
+      "width": 360,
+      "scroll": 360,
+      "height": 844
+    },
+    {
+      "page": "算力",
+      "theme": "light",
+      "width": 360,
+      "scroll": 360,
+      "height": 844
+    },
+    {
+      "page": "设置",
+      "theme": "light",
+      "width": 360,
+      "scroll": 360,
+      "height": 844
+    },
+    {
+      "page": "创作",
+      "theme": "light",
+      "width": 390,
+      "scroll": 390,
+      "height": 844
+    },
+    {
+      "page": "任务",
+      "theme": "light",
+      "width": 390,
+      "scroll": 390,
+      "height": 844
+    },
+    {
+      "page": "作品",
+      "theme": "light",
+      "width": 390,
+      "scroll": 390,
+      "height": 844
+    },
+    {
+      "page": "算力",
+      "theme": "light",
+      "width": 390,
+      "scroll": 390,
+      "height": 844
+    },
+    {
+      "page": "设置",
+      "theme": "light",
+      "width": 390,
+      "scroll": 390,
+      "height": 844
+    },
+    {
+      "page": "创作",
+      "theme": "light",
+      "width": 412,
+      "scroll": 412,
+      "height": 844
+    },
+    {
+      "page": "任务",
+      "theme": "light",
+      "width": 412,
+      "scroll": 412,
+      "height": 844
+    },
+    {
+      "page": "作品",
+      "theme": "light",
+      "width": 412,
+      "scroll": 412,
+      "height": 844
+    },
+    {
+      "page": "算力",
+      "theme": "light",
+      "width": 412,
+      "scroll": 412,
+      "height": 844
+    },
+    {
+      "page": "设置",
+      "theme": "light",
+      "width": 412,
+      "scroll": 412,
+      "height": 844
+    },
+    {
+      "page": "创作",
+      "theme": "light",
+      "width": 430,
+      "scroll": 430,
+      "height": 844
+    },
+    {
+      "page": "任务",
+      "theme": "light",
+      "width": 430,
+      "scroll": 430,
+      "height": 844
+    },
+    {
+      "page": "作品",
+      "theme": "light",
+      "width": 430,
+      "scroll": 430,
+      "height": 844
+    },
+    {
+      "page": "算力",
+      "theme": "light",
+      "width": 430,
+      "scroll": 430,
+      "height": 844
+    },
+    {
+      "page": "设置",
+      "theme": "light",
+      "width": 430,
+      "scroll": 430,
+      "height": 844
+    },
+    {
+      "page": "创作",
+      "theme": "light",
+      "width": 768,
+      "scroll": 768,
+      "height": 844
+    },
+    {
+      "page": "任务",
+      "theme": "light",
+      "width": 768,
+      "scroll": 768,
+      "height": 844
+    },
+    {
+      "page": "作品",
+      "theme": "light",
+      "width": 768,
+      "scroll": 768,
+      "height": 844
+    },
+    {
+      "page": "算力",
+      "theme": "light",
+      "width": 768,
+      "scroll": 768,
+      "height": 844
+    },
+    {
+      "page": "设置",
+      "theme": "light",
+      "width": 768,
+      "scroll": 768,
+      "height": 844
+    },
+    {
+      "page": "创作",
+      "theme": "light",
+      "width": 1024,
+      "scroll": 1024,
+      "height": 844
+    },
+    {
+      "page": "任务",
+      "theme": "light",
+      "width": 1024,
+      "scroll": 1024,
+      "height": 844
+    },
+    {
+      "page": "作品",
+      "theme": "light",
+      "width": 1024,
+      "scroll": 1024,
+      "height": 844
+    },
+    {
+      "page": "算力",
+      "theme": "light",
+      "width": 1024,
+      "scroll": 1024,
+      "height": 844
+    },
+    {
+      "page": "设置",
+      "theme": "light",
+      "width": 1024,
+      "scroll": 1024,
+      "height": 844
+    },
+    {
+      "page": "创作",
+      "theme": "light",
+      "width": 1440,
+      "scroll": 1440,
+      "height": 844
+    },
+    {
+      "page": "任务",
+      "theme": "light",
+      "width": 1440,
+      "scroll": 1440,
+      "height": 844
+    },
+    {
+      "page": "作品",
+      "theme": "light",
+      "width": 1440,
+      "scroll": 1440,
+      "height": 844
+    },
+    {
+      "page": "算力",
+      "theme": "light",
+      "width": 1440,
+      "scroll": 1440,
+      "height": 844
+    },
+    {
+      "page": "设置",
+      "theme": "light",
+      "width": 1440,
+      "scroll": 1440,
+      "height": 844
+    }
+  ],
+  "batch_requests": 1,
+  "after_submit": "Colab GPU Studio\nMock / 离线演示\n📁 Mock / 演示项目\n▾\n设置\n✦\n创作\n⚡\n任务\n3\n🖼\n作品\n⚙\n算力\n当前项目任务\n刷新\n搜索任务\n任务状态\n全部\n排队中\nMock 批次 6658ad75 · 0/3\ndemo-mock\nMOCK · 排队中\n任务：c91c56fc\n执行次数：0\n创建：2026-11-05T13:01:34.625987\n查看详情\n取消\ndemo-mock\nMOCK · 排队中\n任务：5caa12cb\n执行次数：0\n创建：2026-11-05T13:01:34.625452\n查看详情\n取消\ndemo-mock\nMOCK · 排队中\n任务：36c6df64\n执行次数：0\n创建：2026-11-05T13:01:34.624820\n查看详情\n取消",
+  "completed_mock_jobs": 3,
+  "mock_gallery_assets": 3,
+  "gallery_images_loaded": 3,
+  "keyboard_viewport_overflow": false,
+  "session_survived_reload": true
+}

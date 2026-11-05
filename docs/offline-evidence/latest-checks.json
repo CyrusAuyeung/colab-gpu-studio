@@ -1,0 +1,107 @@
+{
+  "backend": {
+    "command": "uv run pytest -q",
+    "exit_code": 0,
+    "passed": 165,
+    "warnings": [
+      "Starlette TestClient httpx deprecation"
+    ],
+    "duration_seconds": 138.78
+  },
+  "lint": {
+    "command": "uv run ruff check api tests",
+    "exit_code": 0
+  },
+  "diff_check": {
+    "command": "git diff --check",
+    "exit_code": 0
+  },
+  "scope": "Local Mock only; no real GPU validation; full specification not complete",
+  "independent_review": "deleg_58bd1b73 seven findings fixed with seven focused regressions; post-fix approval pending",
+  "worker_artifact_producer": "Local injected store only; 150MiB file, resume and bounded reads tested; remote cloud adapter/bootstrap incomplete",
+  "application_assembly": "Restarted local offline API; health 200 version 0.1.31-dev.1; browser 70 combinations and three new Mock jobs verified",
+  "frontend": "typecheck, contract, build passed; lazy images scrolled and decoded",
+  "closed_loops": [
+    "Browser batch submission, 3 Mock jobs, gallery decode, lease cleanup",
+    "Injected worker file publication, manifest verification, asset commit, completion, mock runtime deletion"
+  ],
+  "atomic_transition": "Job/Execution/Batch/Event atomic; expected state plus execution identity reject stale attempt callbacks",
+  "remaining": [
+    "remote cloud artifact adapter and bootstrap",
+    "real Comfy service and hot models (not executed)",
+    "complete spec matrix and remaining resource boundaries",
+    "post-fix independent review pending"
+  ],
+  "execution_preparation": "Atomic job execution identity and Execution attempt insert; idempotent repeat",
+  "architecture": "Admission domain service extracted; schemas/presenters/batch routes separated",
+  "same_job_attempts": "Mock only: failed-start -> cleanup -> same-job retry -> second execution completed; old execution retained; replay idempotent",
+  "attempt_browser": {
+    "passed": true,
+    "job_id_unchanged": true,
+    "attempt_states": [
+      "failed",
+      "completed"
+    ],
+    "verified_outputs": 1,
+    "runtime_deleted": true,
+    "report": "attempt-browser-report.json",
+    "detail_history_verified": true
+  },
+  "known_observations": [
+    "one browser submission returned SCHEDULER_BUSY 503; later fresh submission succeeded; transient-lock UX pending"
+  ],
+  "long_list_browser": {
+    "synthetic": true,
+    "input_jobs": 200,
+    "input_assets": 1000,
+    "initial_job_nodes": 30,
+    "initial_asset_nodes": 24,
+    "load_more_and_search": true,
+    "overflow": false,
+    "page_errors": [],
+    "external_requests": [],
+    "interaction_seconds": 0.653
+  },
+  "fresh_server_verification": {
+    "passed": true,
+    "fresh_servers": 2,
+    "audits": {
+      "network-audit.json": {
+        "real_runtime_create_count": 0,
+        "real_runtime_delete_count": 0,
+        "real_mcp_call_count": 0,
+        "real_colab_oauth_call_count": 0,
+        "blocked_attempts": [],
+        "test_exit_status": 0
+      },
+      "normal-network-audit.json": {
+        "real_runtime_create_count": 0,
+        "real_runtime_delete_count": 0,
+        "real_mcp_call_count": 0,
+        "real_colab_oauth_call_count": 0,
+        "blocked_attempts": []
+      },
+      "fault-network-audit.json": {
+        "real_runtime_create_count": 0,
+        "real_runtime_delete_count": 0,
+        "real_mcp_call_count": 0,
+        "real_colab_oauth_call_count": 0,
+        "blocked_attempts": []
+      }
+    }
+  },
+  "hosted_ci": "configuration added; not executed on GitHub Actions",
+  "streamed_cloud_adapter": {
+    "implemented": "server-side file upload and manifest persistence",
+    "transport": "httpx.MockTransport only",
+    "sizes_mib": [
+      150,
+      500
+    ],
+    "max_chunk_mib": 8,
+    "durable_resume_verified": true,
+    "independent_review": "deleg_dee5a5fc pending",
+    "worker_bootstrap_remote_injection": "not implemented",
+    "real_drive_verified": false
+  }
+}

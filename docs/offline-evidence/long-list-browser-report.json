@@ -1,0 +1,12 @@
+{
+  "synthetic": true,
+  "input_jobs": 200,
+  "input_assets": 1000,
+  "initial_job_nodes": 30,
+  "initial_asset_nodes": 24,
+  "load_more_and_search": true,
+  "overflow": false,
+  "page_errors": [],
+  "external_requests": [],
+  "interaction_seconds": 0.874
+}

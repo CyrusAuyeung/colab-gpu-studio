@@ -132,7 +132,7 @@ a {
   display: flex;
   flex-direction: column;
   position: relative;
-  padding-bottom: calc(var(--nav-bottom-height) + var(--safe-bottom) + 64px);
+  padding-bottom: calc(var(--nav-bottom-height) + var(--safe-bottom) + 84px);
 }
 
 @media (min-width: 960px) {

@@ -21,15 +21,15 @@
 
 .stack {
   display: grid;
-  gap: 16px;
+  gap: 12px;
 }
 
 /* 核心磨砂平整卡片 (Surface Card) */
 .card {
   display: grid;
-  gap: 14px;
+  gap: 10px;
   min-width: 0;
-  padding: 16px;
+  padding: 13px 14px;
   border-radius: var(--radius-lg);
   background: var(--surface);
   border: 1px solid var(--line);

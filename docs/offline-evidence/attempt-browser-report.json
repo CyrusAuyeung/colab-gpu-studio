@@ -1,0 +1,13 @@
+{
+  "rejected_submit_keeps_dialog_and_key": true,
+  "job_id_unchanged": true,
+  "attempt_states": [
+    "failed",
+    "completed"
+  ],
+  "attempt_number": 2,
+  "verified_outputs": 1,
+  "runtime_deleted": true,
+  "page_errors": [],
+  "external_requests": []
+}
