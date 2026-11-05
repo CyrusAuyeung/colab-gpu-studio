@@ -1271,6 +1271,27 @@ export default function App() {
         </button>
       </header>
 
+      {/* 导航栏：移动端吸底，电脑端在顶栏下方优雅排列 */}
+      <nav className="bottomNav" aria-label="工作区导航">
+        {tabs.map((item) => {
+          const isActive = tab === item;
+          return (
+            <button
+              key={item}
+              type="button"
+              aria-current={isActive ? 'page' : undefined}
+              onClick={() => setTab(item)}
+            >
+              <span>{item === '创作' ? '✦' : item === '任务' ? '⚡' : item === '作品' ? '🖼' : '⚙'}</span>
+              <span>{item}</span>
+              {item === '任务' && activeJobsCount > 0 && (
+                <span className="tabBadge">{activeJobsCount}</span>
+              )}
+            </button>
+          );
+        })}
+      </nav>
+
       {/* 项目切换弹层 */}
       <ProjectSheet
         open={showProjectSheet}
@@ -1379,27 +1400,6 @@ export default function App() {
           />
         )}
       </main>
-
-      {/* 底部磨砂导航栏 */}
-      <nav className="bottomNav" aria-label="底栏导航">
-        {tabs.map((item) => {
-          const isActive = tab === item;
-          return (
-            <button
-              key={item}
-              type="button"
-              aria-current={isActive ? 'page' : undefined}
-              onClick={() => setTab(item)}
-            >
-              <span>{item === '创作' ? '✦' : item === '任务' ? '⚡' : item === '作品' ? '🖼' : '⚙'}</span>
-              <span>{item}</span>
-              {item === '任务' && activeJobsCount > 0 && (
-                <span className="tabBadge">{activeJobsCount}</span>
-              )}
-            </button>
-          );
-        })}
-      </nav>
 
       {/* 确认生成弹窗 */}
       {confirm === 'submit' && activeWorkflow && (

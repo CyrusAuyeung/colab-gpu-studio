@@ -428,6 +428,121 @@ a {
   color: var(--text);
 }
 
+@media (min-width: 768px) {
+  :root {
+    --u: 5.6px;
+  }
+
+  body {
+    font-size: 15px;
+    line-height: 1.6;
+  }
+
+  .app {
+    width: min(100%, 880px);
+    padding-top: 20px;
+    padding-bottom: 30px;
+  }
+
+  .topbar {
+    position: static;
+    border-radius: 20px;
+    margin-bottom: 20px;
+    padding: 16px 24px;
+    border: 1px solid var(--line);
+    box-shadow: 0 10px 30px -10px rgba(0, 0, 0, 0.45);
+  }
+
+  .brand {
+    font-size: 20px;
+  }
+
+  .brand small {
+    font-size: 13px;
+  }
+
+  .projectChip {
+    max-width: 40%;
+    min-height: 40px;
+    padding: 8px 18px;
+    font-size: 14px;
+  }
+
+  /* 电脑端导航变为顶栏下方常驻标签栏，防止移动端 fixed 吸底遮挡长表单 */
+  .bottomNav {
+    position: static;
+    width: 100%;
+    margin-bottom: 24px;
+    border-radius: 16px;
+    border: 1px solid var(--line);
+    padding: 6px 10px;
+    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
+  }
+
+  .bottomNav button {
+    min-height: 42px;
+    font-size: 14px;
+    border-radius: 10px;
+    flex-direction: row;
+    gap: 8px;
+  }
+
+  .bottomNav button svg {
+    width: 18px;
+    height: 18px;
+  }
+
+  .tabBadge {
+    position: static;
+    margin-left: 6px;
+    min-width: 18px;
+    height: 18px;
+    font-size: 11px;
+    padding: 0 6px;
+  }
+
+  .button {
+    min-height: 42px;
+    padding: 8px 20px;
+    font-size: 14px;
+  }
+
+  .fieldInput,
+  .field input:not([type="checkbox"]):not([type="radio"]):not([type="file"]),
+  .field textarea,
+  .field select {
+    min-height: 42px;
+    border-radius: 12px;
+    padding: 10px 14px;
+    font-size: 14px;
+  }
+
+  .field label {
+    font-size: 14px;
+  }
+
+  .pill {
+    padding: 4px 12px;
+    font-size: 13px;
+  }
+
+  .loginCard {
+    padding: 40px 36px;
+    border-radius: 24px;
+    gap: 20px;
+  }
+
+  .loginCard h1 {
+    font-size: 28px;
+  }
+
+  .loginCard input {
+    min-height: 46px;
+    border-radius: 12px;
+    padding: 10px 14px;
+  }
+}
+
 /* 折叠面板美化（功能收纳专用） */
 details.foldable {
   border: 1px solid var(--line);
