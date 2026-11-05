@@ -473,8 +473,13 @@ class Repository:
             job.state='completed'
             following.data={**following.data,'lease_id':lease_id,
                             'deadline_epoch':lease.data['deadline_epoch']}
+            handle=lease.data.get('handle')
+            if isinstance(handle,dict) and lease.data.get('provider')=='colab':
+                # Real providers verify handle ownership against the lease owner; keep them in step.
+                handle={**handle,'job_id':next_job_id,'owner_job_id':next_job_id}
             lease.data={**lease.data,'owner_job_id':next_job_id,'current_job_id':next_job_id,
-                        'last_active_at':now,'state':'active'}
+                        'last_active_at':now,'state':'active',
+                        **({'handle':handle} if isinstance(handle,dict) else {})}
             lease.state='active'
             execution=session.get(GpuExecutionRow,job.data.get('execution_id'))
             if execution is not None:
