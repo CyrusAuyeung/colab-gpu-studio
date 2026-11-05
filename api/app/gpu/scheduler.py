@@ -44,6 +44,7 @@ MAX_OUTPUT_BYTES = 100 * 1024 * 1024
 _STAGE_TEXT = {
     "restore_env": "正在恢复运行环境",
     "restore_weights": "正在恢复模型文件",
+    "warm_reuse": "同一台机器已有模型，直接复用",
     "comfy_start": "正在启动 ComfyUI",
     "sampling": "采样中",
     "prep_env": "正在构建环境缓存",
@@ -691,6 +692,18 @@ class Scheduler:
             return self._begin_failure(job, "gpu_execution_id_mismatch", "executor changed execution ID")
         return self._set_state(job, "running", "GPU execution started")
 
+    def _note_restored(self, job: dict, lease: dict, timings: dict) -> dict:
+        """Remember on the lease which environment the runtime now has, and whether this job reused it."""
+        signature = job.get("compatibility_signature")
+        skipped = "warm_reuse" in timings
+        try:
+            if signature and lease.get("restored_signature") != signature:
+                self._update("leases", lease["id"], {"restored_signature": signature}, job.get("owner_id"))
+            return self._update("jobs", job["id"], {"restore_skipped": skipped}, job.get("owner_id"))
+        except Exception:  # noqa: BLE001 - bookkeeping must never fail a finished job
+            logging.getLogger(__name__).warning("could not record restored environment")
+            return job
+
     def _model_cache(self, job: dict) -> dict | None:
         """Drive cache for reviewed model weights; None means download from Hugging Face."""
         if os.getenv("GPU_MODEL_CACHE", "drive").strip().lower() != "drive":
@@ -730,6 +743,8 @@ class Scheduler:
             return self._begin_failure(job,'gpu_execution_id_mismatch','poll execution identity mismatch')
         state = result.get("state")
         timings = result.get("timings") if isinstance(result.get("timings"), dict) else None
+        if state == "completed":
+            job = self._note_restored(job, lease, timings or {})
         if state == "running":
             stage = result.get("stage")
             if stage in _STAGE_TEXT and stage != job.get("stage"):

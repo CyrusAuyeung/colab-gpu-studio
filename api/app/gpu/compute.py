@@ -236,6 +236,7 @@ class MockGPUExecutor:
         self._executions[execution_id] = {
             "signature": job.get('compatibility_signature'),
             "worker_session_id": session['id'],
+            "restore_skipped": bool(session['restore_skipped'].get(execution_id)),
             "runtime": handle.get('runtime_name'),
             "owner_id": job.get('owner_id'),
             "remaining": self.polls_before_complete,
@@ -281,7 +282,8 @@ class MockGPUExecutor:
             "metadata": {"mock": True, "label": "MOCK"},
         }
         self.outputs.append(output)
-        return {"state": "completed", "outputs": [output]}
+        timings = {"warm_reuse": 0.0} if state.get("restore_skipped") else {"restore_weights": 0.0}
+        return {"state": "completed", "outputs": [output], "timings": timings}
 
 
 class DisabledProvider:
