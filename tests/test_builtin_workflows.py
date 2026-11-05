@@ -5,6 +5,7 @@ from app.gpu.repository import Repository
 EXPECTED = {
     ("moss-image-sft-t2i", "1.0.0"),
     ("krea2-moss-dual-t2i", "1.0.0"),
+    ("krea2-moss-dual-t2i", "1.1.0"),
     ("minimax-h3-i2v", "1.1.0"),
     ("minimax-h3-ref2v", "1.4.0"),
 }
@@ -50,7 +51,7 @@ def test_builtin_records_are_owner_scoped():
     registry.bootstrap("second-owner")
     first = registry.workflows("first-owner")
     second = registry.workflows("second-owner")
-    assert len(first) == len(second) == 5
+    assert len(first) == len(second) == 6
     assert {r["id"] for r in first}.isdisjoint(r["id"] for r in second)
     assert all(r["owner_id"] == "second-owner" for r in second)
 
@@ -137,4 +138,4 @@ def test_catalog_bootstrap_never_calls_external_services(monkeypatch):
     monkeypatch.setattr(httpx.Client, "request", reject)
     registry = Registry(Repository(Store("sqlite:///:memory:")))
     registry.bootstrap("offline-owner")
-    assert len(registry.workflows("offline-owner")) == 5
+    assert len(registry.workflows("offline-owner")) == 6

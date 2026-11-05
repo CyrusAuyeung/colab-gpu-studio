@@ -6,7 +6,8 @@
 
 | 模板文件 | 工作流名称 | 版本 | 推荐显卡 | 特点说明 |
 |---|---|---|---|---|
-| `krea2-moss-dual-t2i-1.0.0.json` | Krea-2 + MOSS 双采 | 1.0.0 | T4 HighRAM | 先用 Krea-2 Turbo 快速铺构图，再用 MOSS 0.36 降噪精修细节，兼顾构图和画质 |
+| `krea2-moss-dual-t2i-1.0.0.json` | Krea-2 + MOSS 双采 (原模版) | 1.0.0 | T4 HighRAM | 先用 Krea-2 Turbo 快速铺构图，再用 MOSS 0.36 降噪精修细节 |
+| `krea2-moss-dual-t2i-1.1.0.json` | Krea-2 + MOSS 双采 (MJ胶片精修版) | 1.1.0 | T4 HighRAM | 全链路串联 7 个电影胶片与 MJ 质感 LoRA（Krea 忧郁/胶片/写实/柔光/滤镜 + MOSS 梦境/胶片） |
 | `moss-image-sft-t2i-1.0.0.json` | MOSS 单图 | 1.0.0 | T4 | OpenMOSS SFT (int8) 标准文生图 |
 | `minimax-h3-i2v-1.1.0.json` | MiniMax H3 首尾帧视频 | 1.1.0 | L4 | 上传首帧（可加尾帧）生成带原生声音的短视频，挂了 8 步加速 LoRA |
 | `minimax-h3-ref2v-1.4.0.json` | MiniMax H3 多参考图视频 | 1.4.0 | L4 | 最多垫 6 张参考图锁角色/画风生成有声视频，功能最全（见下） |

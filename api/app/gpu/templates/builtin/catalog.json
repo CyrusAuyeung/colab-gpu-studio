@@ -28,6 +28,12 @@
       "version": "1.0.0",
       "model_id": "moss-image-sft",
       "title": "MOSS-Image SFT 文生图"
+    },
+    {
+      "file": "krea2-moss-dual-t2i-1.1.0.json",
+      "workflow_key": "krea2-moss-dual-t2i",
+      "version": "1.1.0",
+      "model_id": "krea2-moss-dual"
     }
   ]
 }

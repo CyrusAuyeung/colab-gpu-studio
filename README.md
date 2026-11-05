@@ -16,7 +16,7 @@
 
 | 工作流 | 版本 | 推荐显卡 | 说明 |
 |---|---|---|---|
-| `krea2-moss-dual-t2i` | 1.0.0 | T4 HighRAM | Krea-2 Turbo 先出构图 + MOSS 0.36 重绘精修 |
+| `krea2-moss-dual-t2i` | 1.0.0 / 1.1.0 | T4 HighRAM | 1.0.0 原模版；1.1.0 全链路串联 7 个 MJ 与胶片精修 LoRA，大幅提升出图画质 |
 | `moss-image-sft-t2i` | 1.0.0 | T4 | OpenMOSS 单张文生图 |
 | `minimax-h3-i2v` | 1.1.0 | L4 | 首帧（可选尾帧）生成有声短视频，带 8 步加速 LoRA |
 | `minimax-h3-ref2v` | 1.4.0 | L4 | 最多 6 张参考图生成有声视频，可选 4步/8步/精修/20步 与二次元无缝 VAE |
