@@ -1,0 +1,113 @@
+{
+  "version": "1.2.0",
+  "weights": [
+    {
+      "repo_id": "Comfy-Org/Krea-2",
+      "filename": "diffusion_models/krea2_turbo_fp8.safetensors",
+      "revision": "588feaf955b08b9ac4723eeb751752ab045dba71",
+      "sha256": "2d3523507c59df965e5d4ec9a1b9b4591297a50c058915c36fb29d124d30f64e",
+      "target": "diffusion_models/krea2_turbo_fp8.safetensors",
+      "size": 12900096996
+    },
+    {
+      "repo_id": "Comfy-Org/Krea-2",
+      "filename": "text_encoders/qwen3vl_4b_fp8_scaled.safetensors",
+      "revision": "588feaf955b08b9ac4723eeb751752ab045dba71",
+      "sha256": "54bd5144df0bbc25dd6ccadfcb826b521445a1b06ae5a42570bdd2974ca87094",
+      "target": "text_encoders/qwen3vl_4b_fp8_scaled.safetensors",
+      "size": 5242467968
+    },
+    {
+      "repo_id": "Comfy-Org/Krea-2",
+      "filename": "vae/qwen_image_vae.safetensors",
+      "revision": "588feaf955b08b9ac4723eeb751752ab045dba71",
+      "sha256": "a70580f0213e67967ee9c95f05bb400e8fb08307e017a924bf3441223e023d1f",
+      "target": "vae/qwen_image_vae.safetensors",
+      "size": 253806246
+    },
+    {
+      "repo_id": "Comfy-Org/MOSS-Image",
+      "filename": "diffusion_models/moss_image_sft_int8_convrot.safetensors",
+      "revision": "530a4c94f92c35ef6818b1b035a983fe9dcf5f54",
+      "sha256": "b4d1475bc7eeffd7b809e82ea13a1fba1fb85c4e18365af3813722faa5c0fe4f",
+      "target": "diffusion_models/moss_image_sft_int8_convrot.safetensors",
+      "size": 5413698958
+    },
+    {
+      "repo_id": "Comfy-Org/MOSS-Image",
+      "filename": "text_encoders/qwen3.5_9b_bf16.safetensors",
+      "revision": "530a4c94f92c35ef6818b1b035a983fe9dcf5f54",
+      "sha256": "7e6e9f08d598f829cb940e60ac0c698e1f1c27a47daffd7e598cd78c78b4cc53",
+      "size": 19306312328,
+      "target": "text_encoders/qwen3.5_9b_bf16.safetensors"
+    },
+    {
+      "repo_id": "Comfy-Org/MOSS-Image",
+      "filename": "vae/flux2-vae.safetensors",
+      "revision": "530a4c94f92c35ef6818b1b035a983fe9dcf5f54",
+      "sha256": "868fe7b343cc8f3a19dbcfcafbc3d5f888802be3f89bd81b65b3621a066ce8f3",
+      "target": "vae/flux2-vae.safetensors",
+      "size": 336211292
+    },
+    {
+      "repo_id": "Alex995647/loras-krea-2",
+      "filename": "tjfilm-style-for-krea2/TJFilmStyleKrea2_V2.safetensors",
+      "revision": "5e99e0efdd89901211e4bea00c9bfd54ed860d24",
+      "sha256": "9cc14d1ac9c89ddd81b26479c33edbc402c7e9463513fa73872c3aac5edf4123",
+      "target": "loras/KR2-电影胶片2-TJFilmStyleKrea2_V2.safetensors",
+      "size": 228587776
+    },
+    {
+      "repo_id": "RunningHubAI/rh-krea2-cc-mj-lora",
+      "filename": "krea2-Cc-MJ-影视柔光.safetensors",
+      "revision": "e73572d26b4983c07d52cd2a79c5b7ebfc068636",
+      "sha256": "1e8a3daeee59893d626da3abc2cdbac84786738069b58d23a2cec357ecd0ee26",
+      "target": "loras/krea2-Cc-MJ-影视柔光.safetensors",
+      "size": 228616016
+    },
+    {
+      "repo_id": "RunningHubAI/rh-krea2-cc-mj-lora",
+      "filename": "krea2-Cc-MJ-风格滤镜.safetensors",
+      "revision": "e73572d26b4983c07d52cd2a79c5b7ebfc068636",
+      "sha256": "a7c4936fca171cadbdc5b97c2315da7810d5fd68e6a4deffb3813074ee9e0a6f",
+      "target": "loras/krea2-Cc-MJ-风格滤镜.safetensors",
+      "size": 342878264
+    },
+    {
+      "repo_id": "yufusoft/realism_engine_krea2_v3.1",
+      "filename": "realism_engine_krea2_v3.1.safetensors",
+      "revision": "04b0a0473c1e98a98b999c8dd3f71ca539c85ec2",
+      "sha256": "a6712629445a2e91a616568e82befa8c8c7518e891a0f7c9918138634b5b54a5",
+      "target": "loras/realism_engine_krea2_v3.1_new.safetensors",
+      "size": 1562410296
+    },
+    {
+      "source": "user-provided",
+      "sha256": "bb8ccb042c300e8453a5aa4ef0797c2c011fae5137dc6eba1442492d8fc535e2",
+      "target": "loras/Krea_2_zidiusArt_Melancholy.safetensors",
+      "size": 228588904,
+      "note": "请自行合法取得对应权重，按SHA256校验；不提供私人Drive文件ID。"
+    },
+    {
+      "source": "user-provided",
+      "sha256": "9a133e9b1db7a135516b8747ea4cf4e95c70d5fdec0e4e89bb5765504b8eb9dc",
+      "target": "loras/feverdream-epoch-07.safetensors",
+      "size": 129017224,
+      "note": "请自行合法取得对应权重，按SHA256校验；不提供私人Drive文件ID。"
+    },
+    {
+      "source": "user-provided",
+      "sha256": "1c08050f20869c0be01102118caeeaf9b3d405bd1ec529f67d80495924cbe51d",
+      "target": "loras/TJFilmMoss_V1.safetensors",
+      "size": 145157296,
+      "note": "请自行合法取得对应权重，按SHA256校验；不提供私人Drive文件ID。"
+    }
+  ],
+  "custom_nodes": [
+    {
+      "repo": "https://github.com/huwhitememes/comfyui-krea2-conditioning",
+      "commit": "729cda4fade982988a375b01928f515458407a5c",
+      "dir": "comfyui-krea2-conditioning"
+    }
+  ]
+}

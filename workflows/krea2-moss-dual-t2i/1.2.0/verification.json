@@ -1,0 +1,21 @@
+{
+  "reference": "用户RH PNG内嵌实际执行图",
+  "node_count": 27,
+  "changed_nodes": [
+    {
+      "node": "714",
+      "class": "PrimitiveStringMultiline",
+      "changed_fields": [
+        "value"
+      ]
+    }
+  ],
+  "only_change_reason": "将私人正向提示词替换为中性示例",
+  "model_bytes_scope": "提供本地已核验SHA256；RH服务端未提供模型哈希，不能证明逐字节相同",
+  "tests": {
+    "passed": 130,
+    "skipped": 1,
+    "warnings": 1,
+    "ruff": "passed"
+  }
+}

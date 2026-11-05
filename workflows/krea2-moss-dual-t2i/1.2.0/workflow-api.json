@@ -1,0 +1,388 @@
+{
+  "197": {
+    "class_type": "CLIPLoader",
+    "inputs": {
+      "clip_name": "qwen3vl_4b_fp8_scaled.safetensors",
+      "type": "krea2",
+      "device": "default"
+    },
+    "_meta": {
+      "title": "CLIPLoader"
+    }
+  },
+  "231": {
+    "class_type": "CLIPTextEncode",
+    "inputs": {
+      "text": [
+        "714",
+        0
+      ],
+      "clip": [
+        "512",
+        0
+      ]
+    },
+    "_meta": {
+      "title": "CLIPTextEncode"
+    }
+  },
+  "199": {
+    "class_type": "CLIPTextEncode",
+    "inputs": {
+      "text": [
+        "714",
+        0
+      ],
+      "clip": [
+        "197",
+        0
+      ]
+    },
+    "_meta": {
+      "title": "CLIPTextEncode"
+    }
+  },
+  "210": {
+    "class_type": "LoraLoaderModelOnly",
+    "inputs": {
+      "lora_name": "krea2-Cc-MJ-影视柔光.safetensors",
+      "strength_model": 0.55,
+      "model": [
+        "207",
+        0
+      ]
+    },
+    "_meta": {
+      "title": "LoraLoaderModelOnly"
+    }
+  },
+  "232": {
+    "class_type": "CLIPTextEncode",
+    "inputs": {
+      "text": "lowres, blurry, extra limbs, deformed hands, bad anatomy, text, watermark, signature, logo, extra characters, duplicate body, broken glass, cropped head, cropped feet, lowres,\nartistic error,\nfilm grain,\nscan artifacts,\nworst quality,\nbad quality,\njpeg artifacts,\nvery displeasing,\nchromatic aberration,\ndithering,\nhalftone,\nscreentone,\nmultiple views,\nlogo,\ntoo many watermarks,\nnegative space,\nblank page,\nblurry,\n...\nbad hands,\nbad feet,\nbad leg,\nbad anatomy,\ntext,\nchibi",
+      "clip": [
+        "512",
+        0
+      ]
+    },
+    "_meta": {
+      "title": "CLIPTextEncode"
+    }
+  },
+  "211": {
+    "class_type": "LoraLoaderModelOnly",
+    "inputs": {
+      "lora_name": "krea2-Cc-MJ-风格滤镜.safetensors",
+      "strength_model": 0.6,
+      "model": [
+        "210",
+        0
+      ]
+    },
+    "_meta": {
+      "title": "LoraLoaderModelOnly"
+    }
+  },
+  "233": {
+    "class_type": "VAEEncode",
+    "inputs": {
+      "pixels": [
+        "203",
+        0
+      ],
+      "vae": [
+        "517",
+        0
+      ]
+    },
+    "_meta": {
+      "title": "VAEEncode"
+    }
+  },
+  "235": {
+    "class_type": "KSampler",
+    "inputs": {
+      "scheduler": "simple",
+      "negative": [
+        "232",
+        0
+      ],
+      "denoise": 0.36,
+      "latent_image": [
+        "233",
+        0
+      ],
+      "seed": 42,
+      "cfg": 2.5,
+      "sampler_name": "er_sde",
+      "model": [
+        "800",
+        0
+      ],
+      "positive": [
+        "231",
+        0
+      ],
+      "steps": 25
+    },
+    "_meta": {
+      "title": "KSampler"
+    }
+  },
+  "236": {
+    "class_type": "VAEDecode",
+    "inputs": {
+      "vae": [
+        "517",
+        0
+      ],
+      "samples": [
+        "235",
+        0
+      ]
+    },
+    "_meta": {
+      "title": "VAEDecode"
+    }
+  },
+  "215": {
+    "class_type": "UNETLoader",
+    "inputs": {
+      "weight_dtype": "default",
+      "unet_name": "krea2_turbo_fp8.safetensors"
+    },
+    "_meta": {
+      "title": "UNETLoader"
+    }
+  },
+  "237": {
+    "class_type": "SaveImage",
+    "inputs": {
+      "filename_prefix": "MJ_DUAL/native",
+      "images": [
+        "236",
+        0
+      ]
+    },
+    "_meta": {
+      "title": "SaveImage"
+    }
+  },
+  "512": {
+    "class_type": "CLIPLoader",
+    "inputs": {
+      "clip_name": "qwen3.5_9b_bf16.safetensors",
+      "type": "moss_image",
+      "device": "default"
+    },
+    "_meta": {
+      "title": "CLIPLoader"
+    }
+  },
+  "216": {
+    "class_type": "ConditioningKrea2Rebalance",
+    "inputs": {
+      "renormalize": true,
+      "per_layer_weights": "1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 2.5, 5.0, 1.1, 4.0, 1.0",
+      "multiplier": 1.0,
+      "conditioning": [
+        "199",
+        0
+      ],
+      "preset": "balanced"
+    },
+    "_meta": {
+      "title": "ConditioningKrea2Rebalance"
+    }
+  },
+  "799": {
+    "class_type": "LoraLoaderModelOnly",
+    "inputs": {
+      "lora_name": "feverdream-epoch-07.safetensors",
+      "strength_model": 0.7,
+      "model": [
+        "509",
+        0
+      ]
+    },
+    "_meta": {
+      "title": "LoraLoaderModelOnly"
+    }
+  },
+  "714": {
+    "class_type": "PrimitiveStringMultiline",
+    "inputs": {
+      "value": "a fully clothed adult in a neutral studio scene, natural pose, tasteful lighting"
+    },
+    "_meta": {
+      "title": "PrimitiveStringMultiline"
+    }
+  },
+  "517": {
+    "class_type": "VAELoader",
+    "inputs": {
+      "vae_name": "flux2-vae.safetensors"
+    },
+    "_meta": {
+      "title": "VAELoader"
+    }
+  },
+  "200": {
+    "class_type": "ConditioningZeroOut",
+    "inputs": {
+      "conditioning": [
+        "199",
+        0
+      ]
+    },
+    "_meta": {
+      "title": "ConditioningZeroOut"
+    }
+  },
+  "201": {
+    "class_type": "VAELoader",
+    "inputs": {
+      "vae_name": "qwen_image_vae.safetensors"
+    },
+    "_meta": {
+      "title": "VAELoader"
+    }
+  },
+  "202": {
+    "class_type": "KSampler",
+    "inputs": {
+      "scheduler": "simple",
+      "negative": [
+        "200",
+        0
+      ],
+      "denoise": 1.0,
+      "latent_image": [
+        "801",
+        0
+      ],
+      "seed": 42,
+      "cfg": 1.0,
+      "sampler_name": "euler",
+      "model": [
+        "211",
+        0
+      ],
+      "positive": [
+        "216",
+        0
+      ],
+      "steps": 8
+    },
+    "_meta": {
+      "title": "KSampler"
+    }
+  },
+  "203": {
+    "class_type": "VAEDecode",
+    "inputs": {
+      "vae": [
+        "201",
+        0
+      ],
+      "samples": [
+        "202",
+        0
+      ]
+    },
+    "_meta": {
+      "title": "VAEDecode"
+    }
+  },
+  "206": {
+    "class_type": "LoraLoaderModelOnly",
+    "inputs": {
+      "lora_name": "KR2-电影胶片2-TJFilmStyleKrea2_V2.safetensors",
+      "strength_model": 0.9,
+      "model": [
+        "209",
+        0
+      ]
+    },
+    "_meta": {
+      "title": "LoraLoaderModelOnly"
+    }
+  },
+  "800": {
+    "class_type": "LoraLoaderModelOnly",
+    "inputs": {
+      "lora_name": "TJFilmMoss_V1.safetensors",
+      "strength_model": 0.7,
+      "model": [
+        "799",
+        0
+      ]
+    },
+    "_meta": {
+      "title": "LoraLoaderModelOnly"
+    }
+  },
+  "207": {
+    "class_type": "LoraLoaderModelOnly",
+    "inputs": {
+      "lora_name": "realism_engine_krea2_v3.1_new.safetensors",
+      "strength_model": 0.5,
+      "model": [
+        "206",
+        0
+      ]
+    },
+    "_meta": {
+      "title": "LoraLoaderModelOnly"
+    }
+  },
+  "801": {
+    "class_type": "EmptyLatentImage",
+    "inputs": {
+      "batch_size": 1,
+      "width": 992,
+      "height": 992
+    },
+    "_meta": {
+      "title": "空latent"
+    }
+  },
+  "209": {
+    "class_type": "LoraLoaderModelOnly",
+    "inputs": {
+      "lora_name": "Krea_2_zidiusArt_Melancholy.safetensors",
+      "strength_model": 0.6,
+      "model": [
+        "215",
+        0
+      ]
+    },
+    "_meta": {
+      "title": "LoraLoaderModelOnly"
+    }
+  },
+  "508": {
+    "class_type": "UNETLoader",
+    "inputs": {
+      "weight_dtype": "default",
+      "unet_name": "moss_image_sft_int8_convrot.safetensors"
+    },
+    "_meta": {
+      "title": "UNETLoader"
+    }
+  },
+  "509": {
+    "class_type": "ModelSamplingAuraFlow",
+    "inputs": {
+      "shift": 5.0,
+      "sampling": "flow",
+      "model": [
+        "508",
+        0
+      ]
+    },
+    "_meta": {
+      "title": "ModelSamplingAuraFlow"
+    }
+  }
+}
