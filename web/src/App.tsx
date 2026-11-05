@@ -242,6 +242,7 @@ export default function App() {
   const [settings, setSettings] = useState<GpuSettings | null>(null);
   const [usage, setUsage] = useState<GpuUsage | null>(null);
   const [specs, setSpecs] = useState<ComputeSpec[]>([]);
+  const [specsNote, setSpecsNote] = useState('');
   const [error, setError] = useState('');
   const [jobError, setJobError] = useState('');
   const [loading, setLoading] = useState('');
@@ -571,7 +572,23 @@ export default function App() {
   }
 
   async function checkGpu() {
-    await action('check', async () => setSpecs(await getGpuComputeSpecs(settings?.google?.colab?.connected ? 'colab' : 'mock')));
+    const canReal = settings?.real_enabled === true && settings?.offline_mode !== true && settings?.google?.colab?.connected === true;
+    setSpecs([]);
+    setSpecsNote('');
+    await action('check', async () => {
+      if (!canReal) {
+        // 真实 GPU 没启用或 Colab 没连接：明确改查模拟，不假装查了真实机器
+        setSpecs(await getGpuComputeSpecs('mock'));
+        setSpecsNote(settings?.offline_mode === true
+          ? '站点处于离线测试模式，下面是「模拟」GPU，不是真实 Colab 机器。'
+          : settings?.real_enabled !== true
+            ? '真实 GPU 未启用，下面是「模拟」GPU，不是真实 Colab 机器。'
+            : 'Colab 还没连接，下面是「模拟」GPU。请先到「设置」连接 Colab。');
+        return;
+      }
+      setSpecs(await getGpuComputeSpecs('colab'));
+      setSpecsNote('已查询 Google Colab：有申请资格不等于现在一定有空闲 GPU。');
+    });
   }
 
   async function stopCompute() {
@@ -720,6 +737,9 @@ export default function App() {
             onCheck={() => void checkGpu()}
             loadingStop={loading === 'stop'}
             loadingCheck={loading === 'check'}
+            specs={specs}
+            specsNote={specsNote}
+            error={error}
           />
         )}
         {tab === '设置' && (
@@ -727,6 +747,7 @@ export default function App() {
             settings={settings}
             usage={usage}
             specs={specs}
+            specsNote={specsNote}
             workflows={workflows}
             loading={loading}
             error={error}

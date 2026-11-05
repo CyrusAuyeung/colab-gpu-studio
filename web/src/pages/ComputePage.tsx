@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { Cpu, Layers, Monitor, Cloud, HardDrive, Leaf, Boxes, Sparkles, ChevronDown, Info, Square, Search } from 'lucide-react';
-import type { GpuSettings, GpuUsage } from '../lib/gpu-api';
+import type { ComputeSpec, GpuSettings, GpuUsage } from '../lib/gpu-api';
+import { ComputeSpecs } from '../components/ComputeSpecs';
 import { Card } from '../components/ui';
 import { STRATEGIES } from '../lib/labels';
 import styles from '../gpu.module.css';
@@ -9,7 +10,7 @@ import { cuNumber, shown } from '../lib/ui-helpers';
 const STRATEGY_ICON = { save: Leaf, batch: Boxes, smart: Sparkles } as const;
 
 export function ComputePage({
-  settings, usage, onStop, onCheck, loadingStop, loadingCheck,
+  settings, usage, onStop, onCheck, loadingStop, loadingCheck, specs = [], specsNote = '', error = '',
 }: {
   settings: GpuSettings | null;
   usage: GpuUsage | null;
@@ -17,6 +18,9 @@ export function ComputePage({
   onCheck?: () => void;
   loadingStop?: boolean;
   loadingCheck?: boolean;
+  specs?: ComputeSpec[];
+  specsNote?: string;
+  error?: string;
 }) {
   const [open, setOpen] = useState<string>('');
   const realEnabled = Boolean(settings?.real_enabled) && settings?.offline_mode !== true;
@@ -80,6 +84,9 @@ export function ComputePage({
           <Square size={14} strokeWidth={1.8} aria-hidden />{loadingStop ? '停止中…' : '停止全部任务'}
         </button>
       </div>
+      {specsNote && <p className="muted small" role="status">{specsNote}</p>}
+      {specs.length > 0 && <ComputeSpecs specs={specs} />}
+      {error && <p className="status error" role="alert">{error}</p>}
     </div>
   );
 }

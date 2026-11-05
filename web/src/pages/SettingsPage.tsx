@@ -10,12 +10,13 @@ import styles from '../gpu.module.css';
 import { cuNumber } from '../lib/ui-helpers';
 
 export function SettingsPanel({
-  settings, usage, specs, workflows, loading, error,
+  settings, usage, specs, specsNote = '', workflows, loading, error,
   onConnect, onDisconnect, onCheck, onStop, onImport, onValidate, onPublish, onRollback, onLogout, onBack,
 }: {
   settings: GpuSettings | null;
   usage?: GpuUsage | null;
   specs: ComputeSpec[];
+  specsNote?: string;
   workflows: GpuWorkflow[];
   loading: string;
   error: string;
@@ -115,6 +116,7 @@ export function SettingsPanel({
             <Square size={13} strokeWidth={1.8} aria-hidden />{loading === 'stop' ? '停止中…' : '停止本地任务'}
           </button>
         </div>
+        {specsNote && <p className="muted small" role="status">{specsNote}</p>}
         {specs.length ? <ComputeSpecs specs={specs} /> : null}
       </Card>
 
