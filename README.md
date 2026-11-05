@@ -6,6 +6,24 @@
 
 前端是针对手机触控优化的 React 单页，后端是 FastAPI。平时网页、任务队列、历史作品都存在你自己的小鸡（VPS）上，完全不占 GPU；只有你点下“生成”的那一刻，后端才会去向 Google Colab 申请 GPU，跑完把成品存回来，**立刻销毁 runtime，绝不让你的计算单元（CU）空转白扣费**。
 
+## 下载与在线演示
+
+- **完整版下载**：[0.1.31-dev.8 多平台发布](https://github.com/TizenryA/colab-gpu-studio/releases/tag/v0.1.31-dev.8)。各平台安装方式与验证范围见 Release 附件说明。
+- **只读界面演示**：[打开 Cloudflare Workers 演示站](https://colab-gpu-studio-demo.xingchenciyuan.workers.dev)。公开演示密码：`demo-readonly`。
+- 演示站使用 **0.1.31-dev.8 原版前端**，展示独立的 Mock 数据快照，不连接生产站、Google 或真实 GPU，不消耗 CU。生成、上传、修改、删除和授权均不可用；完整功能请下载后自行部署。
+- [演示说明与更多截图](docs/DEMO.md)。以下截图来自线上演示站的实际浏览器，不是设计稿。
+
+| 手机创作页 | 设置 · 浅色主题 |
+|---|---|
+| <img src="docs/demo/screenshots/mobile-create.png" width="280" alt="手机创作页：黑白界面与离线模拟工作流"> | <img src="docs/demo/screenshots/mobile-settings-light.png" width="280" alt="设置页：浅色主题与离线模式"> |
+
+<details>
+<summary>查看桌面截图</summary>
+
+![桌面创作页](docs/demo/screenshots/desktop-create.png)
+
+</details>
+
 ## 为什么做这个？
 
 1. **省 CU 是第一生产力**：ComfyUI 环境和几十 GB 的大模型权重全部缓存在你的 Google Drive 里。下模型、装环境这种脏活累活交给便宜的 CPU runtime 去干；贵的 GPU（T4 / L4）开机只做三件事：**还原环境 → 采样出片 → 马上关机删实例**。
