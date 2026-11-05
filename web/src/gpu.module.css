@@ -699,3 +699,792 @@ label.referenceRow:hover {
   line-height: 1.2;
   margin-top: 2px;
 }
+
+/* 创作页：创作类型顶级切换 (图片生成 / 视频生成) */
+.categoryTabs {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  background: var(--bg-subtle);
+  padding: 4px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--line);
+}
+
+.categoryTab,
+.categoryTabActive {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 42px;
+  padding: 8px 12px;
+  border-radius: var(--radius-sm);
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  font-size: 0.9rem;
+  font-weight: 600;
+  transition: all 0.15s ease;
+  cursor: pointer;
+}
+
+.categoryTab:hover {
+  color: var(--text-primary);
+}
+
+.categoryTabActive {
+  color: var(--text-primary);
+  background: var(--panel-solid);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25);
+  font-weight: 700;
+}
+
+/* 紧凑工作流选择行 */
+.workflowSelectorBlock {
+  display: flex;
+  align-items: flex-end;
+  gap: 10px;
+  margin-top: 10px;
+}
+
+.workflowSummaryLine {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.wfMetaBadge {
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+  background: var(--panel-strong);
+  padding: 3px 8px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--line);
+}
+
+/* 步进器组件 */
+.stepperControl {
+  display: flex;
+  align-items: center;
+  background: var(--panel-strong);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  min-height: 42px;
+}
+
+.stepperControl button {
+  width: 44px;
+  min-height: 42px;
+  border: none;
+  background: transparent;
+  color: var(--text-primary);
+  font-size: 1.1rem;
+  font-weight: 700;
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+  transition: background-color 0.15s;
+}
+
+.stepperControl button:hover {
+  background: var(--panel-solid);
+}
+
+.stepperControl input {
+  flex: 1;
+  min-width: 0;
+  text-align: center;
+  border: none !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  font-weight: 700;
+  color: var(--text-primary);
+  font-size: 1rem;
+  padding: 0;
+}
+
+/* 预设下拉浮层 */
+.presetDropdown {
+  position: absolute;
+  right: 0;
+  top: 100%;
+  z-index: 25;
+  min-width: 260px;
+  background: var(--surface);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-md);
+  padding: 14px;
+  margin-top: 6px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+  display: grid;
+  gap: 10px;
+}
+
+/* 任务页 KPI 指标网格 */
+.taskKpiGrid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.taskKpiCard {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 10px 4px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--line);
+  background: var(--panel);
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.taskKpiCard:hover {
+  background: var(--panel-strong);
+  border-color: var(--line-strong);
+}
+
+.kpiLabel {
+  font-size: 0.725rem;
+  color: var(--muted);
+  font-weight: 500;
+}
+
+.kpiValue {
+  font-size: 1.25rem;
+  font-weight: 800;
+  margin-top: 2px;
+  letter-spacing: -0.02em;
+}
+
+/* 算力页三级透明状态展示 */
+.statusGroup {
+  display: grid;
+  gap: 10px;
+}
+
+.statusItem {
+  display: grid;
+  gap: 4px;
+  padding: 12px;
+  border-radius: var(--radius-md);
+  background: var(--panel);
+  border: 1px solid var(--line);
+}
+
+.statusLabel {
+  font-size: 0.75rem;
+  color: var(--muted);
+  font-weight: 600;
+}
+
+.statusValue {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.95rem;
+  color: var(--text-primary);
+}
+
+.statusDot {
+  width: 8px;
+  height: 8px;
+  border-radius: var(--radius-full);
+  background: var(--muted);
+}
+
+.statusDot[data-status="ok"],
+.statusDot[data-status="active"] {
+  background: var(--accent);
+  box-shadow: 0 0 6px var(--accent);
+}
+
+.statusDot[data-status="locked"] {
+  background: var(--warning);
+}
+
+.activeRuntimeAlert {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px;
+  border-radius: var(--radius-md);
+  background: rgba(248, 113, 113, 0.08);
+  border: 1px solid rgba(248, 113, 113, 0.3);
+  margin-top: 4px;
+}
+
+@media (min-width: 600px) {
+  .activeRuntimeAlert {
+    flex-direction: row;
+    align-items: center;
+    justify-content: space-between;
+  }
+}
+
+.idleNotice {
+  padding: 10px 12px;
+  border-radius: var(--radius-md);
+  background: var(--bg-subtle);
+  border: 1px dashed var(--line);
+  font-size: 0.8rem;
+  text-align: center;
+}
+
+/* 作品徽标 */
+.videoBadge {
+  position: absolute;
+  bottom: 6px;
+  right: 6px;
+  background: rgba(0, 0, 0, 0.75);
+  color: #ffffff;
+  font-size: 0.65rem;
+  font-weight: 700;
+  padding: 2px 6px;
+  border-radius: 4px;
+  backdrop-filter: blur(4px);
+}
+
+.favBadge {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  background: var(--accent);
+  color: var(--on-accent);
+  font-size: 0.65rem;
+  font-weight: 800;
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+
+/* 算力页：三列当前环境与分割线 */
+.pageHeader {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.pageHeader h2 {
+  margin: 0;
+  font-size: 1.15rem;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.computeEnvColumns {
+  display: flex;
+  align-items: center;
+  justify-content: space-around;
+  padding: 12px 6px;
+  background: var(--bg-subtle);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--line);
+  margin-top: 4px;
+}
+
+.envCol {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+}
+
+.envColLabel {
+  font-size: 0.725rem;
+  color: var(--muted);
+  font-weight: 500;
+}
+
+.envColValue {
+  font-size: 1rem;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.envColBadge {
+  font-size: 0.7rem;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: var(--radius-full);
+  background: var(--panel-strong);
+  color: var(--text-secondary);
+  border: 1px solid var(--line);
+}
+
+.envColBadge[data-enabled="true"] {
+  background: var(--accent-soft);
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+.envDivider {
+  width: 1px;
+  height: 32px;
+  background: var(--line);
+}
+
+.statGrid2x2 {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 10px;
+}
+
+.statItemBox {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px;
+  border-radius: var(--radius-md);
+  background: var(--panel);
+  border: 1px solid var(--line);
+}
+
+.statItemHead {
+  font-size: 0.75rem;
+  color: var(--muted);
+  font-weight: 500;
+}
+
+.statValueLarge {
+  font-size: 1.15rem;
+  font-weight: 800;
+  color: var(--text-primary);
+}
+
+.strategyRows {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.strategyRowItem {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 12px;
+  border-radius: var(--radius-md);
+  background: var(--panel);
+  border: 1px solid var(--line);
+  transition: all 0.15s ease;
+  cursor: pointer;
+}
+
+.strategyRowItem:hover {
+  background: var(--panel-strong);
+  border-color: var(--line-strong);
+}
+
+.strategyRowLeft {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.85rem;
+}
+
+.strategyIcon {
+  font-size: 0.95rem;
+}
+
+.strategyRowDivider {
+  color: var(--line-strong);
+  font-weight: 300;
+}
+
+.strategyRowDesc {
+  color: var(--muted);
+  font-size: 0.775rem;
+}
+
+.strategyChevron {
+  color: var(--muted);
+  font-size: 1.1rem;
+}
+
+.mockNoticeBanner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 0.775rem;
+  line-height: 1.4;
+}
+
+.computeActionRow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 4px;
+}
+
+/* 任务页样式 (Jobs / Tasks Queue) */
+.jobFilterBar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.jobFilterChips {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.filterChip,
+.filterChipActive {
+  padding: 6px 12px;
+  border-radius: var(--radius-full);
+  font-size: 0.775rem;
+  font-weight: 600;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--muted);
+  transition: all 0.15s ease;
+  cursor: pointer;
+}
+
+.filterChip:hover {
+  color: var(--text-primary);
+  border-color: var(--line-strong);
+}
+
+.filterChipActive {
+  background: #ffffff;
+  color: #000000;
+  border-color: #ffffff;
+  font-weight: 700;
+}
+
+.jobFilterSelect {
+  width: auto !important;
+  min-height: 32px !important;
+  padding: 4px 10px !important;
+  font-size: 0.75rem !important;
+  border-radius: var(--radius-full) !important;
+  border: 1px solid var(--line) !important;
+  background: var(--panel) !important;
+  color: var(--muted) !important;
+}
+
+.runningBanner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  border: 1px solid var(--accent);
+  color: var(--text-primary);
+  font-size: 0.8rem;
+  cursor: pointer;
+  transition: background-color 0.15s;
+}
+
+.runningBanner:hover {
+  background: var(--panel);
+}
+
+.jobCardNew {
+  display: grid;
+  gap: 10px;
+  padding: 14px;
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  transition: border-color 0.15s;
+}
+
+.jobCardNew:hover {
+  border-color: var(--line-strong);
+}
+
+.jobCardTop {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.jobThumbBox {
+  width: 48px;
+  height: 48px;
+  border-radius: var(--radius-sm);
+  background: #000000;
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  border: 1px solid var(--line);
+}
+
+.jobThumbIcon {
+  font-size: 1.25rem;
+}
+
+.jobThumbSpinner {
+  font-size: 1.25rem;
+  animation: spin 2s linear infinite;
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+.jobCardMainInfo {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.jobFileName {
+  font-size: 0.875rem;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.jobCardSubInfo {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.725rem;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.jobProgressSection {
+  display: grid;
+  gap: 4px;
+  padding-top: 4px;
+}
+
+.jobProgressHeader {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.725rem;
+  color: var(--text-secondary);
+}
+
+.jobActionsRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+/* 作品画廊 (Gallery Dual Grid) */
+.galleryFilterRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.galleryDualGrid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 10px;
+}
+
+@media (min-width: 768px) {
+  .galleryDualGrid {
+    grid-template-columns: repeat(3, 1fr);
+    gap: 14px;
+  }
+}
+
+@media (min-width: 1080px) {
+  .galleryDualGrid {
+    grid-template-columns: repeat(4, 1fr);
+    gap: 16px;
+  }
+}
+
+.galleryCardNew {
+  display: flex;
+  flex-direction: column;
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  overflow: hidden;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  user-select: none;
+}
+
+.galleryCardNew:hover {
+  border-color: var(--line-strong);
+}
+
+.galleryCardNew[data-selected="true"] {
+  border-color: #ffffff;
+  box-shadow: 0 0 0 1px #ffffff;
+}
+
+.galleryCover {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 1;
+  background: #000000;
+  overflow: hidden;
+}
+
+.galleryCover img,
+.galleryCover video {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.mediaTypePill {
+  position: absolute;
+  top: 6px;
+  left: 6px;
+  background: rgba(0, 0, 0, 0.7);
+  color: #ffffff;
+  font-size: 0.65rem;
+  font-weight: 600;
+  padding: 2px 6px;
+  border-radius: var(--radius-sm);
+  backdrop-filter: blur(4px);
+}
+
+.coverTopRight {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+}
+
+.selectedCheckmark {
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  border-radius: var(--radius-full);
+  background: #ffffff;
+  color: #000000;
+  font-weight: 900;
+  font-size: 0.75rem;
+}
+
+.mediaHudOverlay {
+  position: absolute;
+  bottom: 6px;
+  left: 6px;
+  background: rgba(0, 0, 0, 0.75);
+  color: #ffffff;
+  font-size: 0.65rem;
+  font-weight: 600;
+  padding: 2px 6px;
+  border-radius: var(--radius-sm);
+  backdrop-filter: blur(4px);
+}
+
+.galleryMetaRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  padding: 10px 10px 12px;
+}
+
+.galleryTitleGroup {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.galleryItemTitle {
+  font-size: 0.8rem;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.galleryItemSub {
+  font-size: 0.7rem;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.starFavBtn {
+  background: transparent;
+  border: none;
+  color: var(--muted);
+  font-size: 1.1rem;
+  padding: 2px;
+  line-height: 1;
+  cursor: pointer;
+  transition: color 0.15s;
+}
+
+.starFavBtn[data-active="true"] {
+  color: var(--accent);
+}
+
+/* 底部悬浮操作胶囊栏 (Floating Action Bar) */
+.floatingActionBar {
+  position: fixed;
+  bottom: calc(var(--nav-bottom-height) + var(--safe-bottom) + 10px);
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 45;
+  display: flex;
+  align-items: center;
+  background: #18221e;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-full);
+  padding: 4px 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.6);
+  animation: slideUp 0.18s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.fabItem {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 14px;
+  border: none;
+  background: transparent;
+  color: var(--text-primary);
+  font-size: 0.825rem;
+  font-weight: 600;
+  cursor: pointer;
+  border-radius: var(--radius-full);
+  transition: background-color 0.15s;
+}
+
+.fabItem:hover:not(:disabled) {
+  background: var(--panel-strong);
+}
+
+.fabItem:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.fabDivider {
+  width: 1px;
+  height: 20px;
+  background: var(--line-strong);
+}

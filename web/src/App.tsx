@@ -639,11 +639,11 @@ export default function App() {
             type="button"
             onClick={() => setShowProjectSheet(true)}
           >
-            <span>📁 {activeProject ? activeProject.title : '选择项目'}</span>
+            <span>📁 {activeProject ? activeProject.title : '三月七'}</span>
             <small style={{ color: 'var(--muted)', marginLeft: '4px' }}>▾</small>
           </button>
           <button className="settingsButton" aria-label="打开设置" onClick={() => setTab('设置')}>
-            设置
+            ⚙
           </button>
         </div>
       </header>
@@ -742,11 +742,21 @@ export default function App() {
             onFavorite={(asset) => void favorite(asset)}
             onDelete={(asset) => void remove(asset)}
             onOpen={setViewer}
+            onReuse={(asset) => void reuseAsset(asset)}
+            onGoCreate={() => setTab('创作')}
           />
         )}
 
-        {tab === '算力' && <ComputePage settings={settings} usage={usage} onSettings={() => setTab('设置')} />}
-        {tab === '设置' && <ThemePicker />}
+        {tab === '算力' && (
+          <ComputePage
+            settings={settings}
+            usage={usage}
+            onStop={() => setConfirm('stop')}
+            onCheck={() => void checkGpu()}
+            loadingStop={loading === 'stop'}
+            loadingCheck={loading === 'check'}
+          />
+        )}
         {tab === '设置' && (
           <SettingsPanel
             settings={settings}
@@ -782,6 +792,7 @@ export default function App() {
               sessionStorage.removeItem('colab-gpu-studio-token');
               setLoggedIn(false);
             }}
+            onBack={() => setTab('创作')}
           />
         )}
       </main>

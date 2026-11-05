@@ -1,31 +1,29 @@
-/* Taste-Skill Design System Tokens & Global Base
-   Anti-slop, high-contrast, wabi-sabi precision tool UI
-   Full responsiveness: Mobile (360-430px) + Tablet + PC (1120-1280px)
+/* Colab GPU Studio - Complete Dark Precision UI (Matching Figma / Taste-Skill Specs)
+   Mobile-First (360-430px) + PC Tablet Wide Adaptive
 */
 
 :root {
-  /* Color Palette - Dark (Default) */
-  --bg-base: #090e0c;
-  --bg-subtle: #0d1411;
-  --surface: #111a16;
-  --panel: #15201b;
-  --panel-strong: #1b2923;
-  --panel-solid: #1f3029;
-  --panel-active: #233a30;
+  /* Color Palette - Pitch Dark Precision with Mint / White Contrast */
+  --bg-base: #0a0e0c;
+  --bg-subtle: #0f1513;
+  --surface: #131a17;
+  --panel: #18221e;
+  --panel-strong: #1e2b26;
+  --panel-solid: #24352f;
+  --panel-active: #2a3f37;
 
   --line: rgba(255, 255, 255, 0.08);
   --line-strong: rgba(255, 255, 255, 0.16);
   --line-focus: #52b794;
 
-  --text: #f0fdf4;
-  --text-primary: #f0fdf4;
-  --text-secondary: #d6e8df;
-  --muted: #a4bab0;
+  --text: #f3fbf6;
+  --text-primary: #f3fbf6;
+  --text-secondary: #c2d8cc;
+  --muted: #82988e;
 
   --accent: #52b794;
   --accent-hover: #63cca8;
-  --accent-soft: rgba(82, 183, 148, 0.12);
-  --accent-subtle: rgba(82, 183, 148, 0.06);
+  --accent-soft: rgba(82, 183, 148, 0.14);
   --on-accent: #041a12;
 
   --danger: #f87171;
@@ -42,27 +40,27 @@
   --radius-sm: 6px;
   --radius-md: 10px;
   --radius-lg: 14px;
-  --radius-xl: 20px;
+  --radius-xl: 18px;
   --radius-full: 9999px;
 
-  --nav-bottom-height: 64px;
-  --topbar-height: 60px;
+  --nav-bottom-height: 62px;
+  --topbar-height: 56px;
   --safe-bottom: env(safe-area-inset-bottom, 0px);
   --safe-top: env(safe-area-inset-top, 0px);
 
   color-scheme: dark;
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Noto Sans SC", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Noto Sans SC", "PingFang SC", sans-serif;
   font-feature-settings: "cv02", "cv03", "cv04", "cv11";
 }
 
 :root[data-theme="light"] {
-  --bg-base: #f4f6f4;
-  --bg-subtle: #ebf0ec;
+  --bg-base: #f4f7f5;
+  --bg-subtle: #eaefec;
   --surface: #ffffff;
   --panel: #ffffff;
-  --panel-strong: #eef3ef;
-  --panel-solid: #e5ede7;
-  --panel-active: #d9e6dc;
+  --panel-strong: #edf3f0;
+  --panel-solid: #e2ece6;
+  --panel-active: #d6e5dc;
 
   --line: rgba(0, 0, 0, 0.08);
   --line-strong: rgba(0, 0, 0, 0.16);
@@ -76,12 +74,7 @@
   --accent: #1f7a5b;
   --accent-hover: #176349;
   --accent-soft: rgba(31, 122, 91, 0.10);
-  --accent-subtle: rgba(31, 122, 91, 0.05);
   --on-accent: #ffffff;
-
-  --danger: #dc2626;
-  --danger-soft: rgba(220, 38, 38, 0.10);
-  --on-danger: #ffffff;
 
   color-scheme: light;
 }
@@ -109,7 +102,6 @@ body {
   font-variant-numeric: tabular-nums;
 }
 
-/* Base Inputs & Controls */
 button, input, textarea, select {
   font: inherit;
   color: inherit;
@@ -140,8 +132,7 @@ a {
   display: flex;
   flex-direction: column;
   position: relative;
-  /* 移动端避让底栏 + 安全区，PC 端留常规底边 */
-  padding-bottom: calc(var(--nav-bottom-height) + var(--safe-bottom) + 40px);
+  padding-bottom: calc(var(--nav-bottom-height) + var(--safe-bottom) + 64px);
 }
 
 @media (min-width: 960px) {
@@ -150,7 +141,7 @@ a {
   }
 }
 
-/* Topbar Header */
+/* 顶部状态与品牌栏 */
 .topbar {
   position: sticky;
   top: 0;
@@ -158,44 +149,47 @@ a {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 16px;
+  gap: 12px;
   min-height: var(--topbar-height);
-  padding: max(8px, var(--safe-top)) 16px 8px;
+  padding: max(6px, var(--safe-top)) 16px 6px;
   background: var(--bg-base);
   border-bottom: 1px solid var(--line);
-  transition: border-color 0.15s ease;
 }
 
 .brand {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   gap: 8px;
   min-width: 0;
+}
+
+.brandLogo {
+  color: var(--text-primary);
+  font-size: 1rem;
+  line-height: 1;
+}
+
+.brandText {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.brandTitle {
   font-weight: 700;
-  font-size: 1.05rem;
-  letter-spacing: -0.02em;
+  font-size: 0.95rem;
+  letter-spacing: -0.01em;
   color: var(--text-primary);
   white-space: nowrap;
 }
 
-.brand small {
+.brandSub {
   color: var(--muted);
-  font-size: 0.75rem;
+  font-size: 0.7rem;
   font-weight: 500;
-  background: var(--panel-strong);
-  padding: 2px 6px;
-  border-radius: var(--radius-sm);
-  border: 1px solid var(--line);
-  display: none;
+  white-space: nowrap;
 }
 
-@media (min-width: 600px) {
-  .brand small {
-    display: inline-block;
-  }
-}
-
-/* 顶栏桌面端快捷导航 (PC Tabs in Topbar) */
 .desktopNav {
   display: none;
 }
@@ -233,11 +227,7 @@ a {
   .desktopNav button[aria-current="page"] {
     color: var(--text-primary);
     background: var(--panel-solid);
-    box-shadow: 0 1px 2px rgba(0,0,0,0.2);
-  }
-
-  .desktopNav .navIcon {
-    font-size: 0.95rem;
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
   }
 }
 
@@ -251,14 +241,14 @@ a {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  max-width: 180px;
-  min-height: 36px;
-  padding: 4px 12px;
-  border-radius: var(--radius-md);
+  max-width: 160px;
+  min-height: 34px;
+  padding: 4px 10px;
+  border-radius: var(--radius-full);
   border: 1px solid var(--line-strong);
   background: var(--panel);
   color: var(--text-primary);
-  font-size: 0.825rem;
+  font-size: 0.8rem;
   font-weight: 600;
   white-space: nowrap;
   transition: all 0.15s ease;
@@ -276,14 +266,16 @@ a {
 }
 
 .settingsButton {
-  min-height: 36px;
-  padding: 4px 12px;
+  min-height: 34px;
+  min-width: 34px;
+  padding: 4px;
   background: var(--panel);
   border: 1px solid var(--line);
   border-radius: var(--radius-md);
   color: var(--text-secondary);
-  font-size: 0.825rem;
-  font-weight: 600;
+  font-size: 0.95rem;
+  display: grid;
+  place-items: center;
   transition: all 0.15s ease;
 }
 
@@ -292,7 +284,7 @@ a {
   color: var(--text-primary);
 }
 
-/* 底部磨砂导航栏 (Mobile Bottom Bar) */
+/* 底部常驻导航栏 */
 .bottomNav {
   position: fixed;
   z-index: 40;
@@ -303,14 +295,12 @@ a {
   display: grid;
   grid-template-columns: repeat(4, 1fr);
   gap: 4px;
-  padding: 6px 8px max(8px, var(--safe-bottom));
+  padding: 6px 12px max(6px, var(--safe-bottom));
   background: var(--bg-base);
   border-top: 1px solid var(--line);
-  transition: transform 0.2s ease;
 }
 
 @media (min-width: 960px) {
-  /* PC 端有顶栏导航，隐藏底部悬浮条，彻底避免遮挡 */
   .bottomNav {
     display: none;
   }
@@ -322,7 +312,7 @@ a {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 3px;
+  gap: 2px;
   min-height: 48px;
   padding: 4px;
   border: 0;
@@ -340,8 +330,8 @@ a {
 }
 
 .bottomNav button[aria-current="page"] {
-  color: var(--accent);
-  background: var(--accent-soft);
+  color: var(--text-primary);
+  background: var(--panel-strong);
 }
 
 .tabBadge {
@@ -360,28 +350,27 @@ a {
   place-items: center;
 }
 
-/* Button System */
+/* 通用按钮系统 */
 .button {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 8px;
-  min-height: 42px;
-  padding: 8px 18px;
+  gap: 6px;
+  min-height: 40px;
+  padding: 6px 16px;
   border-radius: var(--radius-md);
-  border: 1px solid var(--accent);
-  background: var(--accent);
+  border: 1px solid var(--text-primary);
+  background: var(--text-primary);
   color: var(--on-accent);
   font-weight: 600;
-  font-size: 0.9rem;
-  letter-spacing: -0.01em;
+  font-size: 0.875rem;
   transition: all 0.12s ease;
   white-space: nowrap;
 }
 
 .button:hover:not(:disabled) {
-  background: var(--accent-hover);
-  border-color: var(--accent-hover);
+  background: #ffffff;
+  color: #000000;
 }
 
 .button:active:not(:disabled) {
@@ -415,7 +404,7 @@ a {
   color: #ffffff;
 }
 
-/* Form Fields & Inputs */
+/* 输入框与控件 */
 .field {
   display: flex;
   flex-direction: column;
@@ -424,15 +413,15 @@ a {
   margin-bottom: 12px;
 }
 
-.field label, label.fieldLabel {
-  font-size: 0.825rem;
+.field label {
+  font-size: 0.8rem;
   font-weight: 600;
   color: var(--text-secondary);
 }
 
 .fieldInput, input, select, textarea {
   width: 100%;
-  min-height: 42px;
+  min-height: 40px;
   padding: 8px 12px;
   border-radius: var(--radius-md);
   border: 1px solid var(--line);
@@ -450,11 +439,10 @@ input:focus, select:focus, textarea:focus {
 }
 
 textarea {
-  min-height: 90px;
+  min-height: 84px;
   resize: vertical;
 }
 
-/* Actions Row */
 .actions {
   display: flex;
   align-items: center;
@@ -462,7 +450,6 @@ textarea {
   flex-wrap: wrap;
 }
 
-/* Status Badges & Pills */
 .pill {
   display: inline-flex;
   align-items: center;
@@ -472,7 +459,7 @@ textarea {
   border: 1px solid var(--line);
   background: var(--panel-strong);
   color: var(--text-secondary);
-  font-size: 0.75rem;
+  font-size: 0.725rem;
   font-weight: 500;
   white-space: nowrap;
 }
@@ -490,13 +477,12 @@ textarea {
   color: var(--danger);
 }
 
-/* Foldable Accordion */
+/* 手风琴面板 */
 details.foldable {
   border: 1px solid var(--line);
   border-radius: var(--radius-md);
   background: var(--surface);
   overflow: hidden;
-  transition: border-color 0.15s ease;
 }
 
 details.foldable[open] {
@@ -504,9 +490,9 @@ details.foldable[open] {
 }
 
 details.foldable > summary {
-  padding: 12px 14px;
+  padding: 10px 14px;
   font-weight: 600;
-  font-size: 0.875rem;
+  font-size: 0.85rem;
   color: var(--text-primary);
   cursor: pointer;
   list-style: none;
@@ -524,7 +510,7 @@ details.foldable > summary::-webkit-details-marker {
 details.foldable > summary::after {
   content: "▾";
   color: var(--muted);
-  font-size: 0.9rem;
+  font-size: 0.85rem;
   transition: transform 0.2s ease;
 }
 
@@ -532,19 +518,14 @@ details.foldable[open] > summary::after {
   transform: rotate(180deg);
 }
 
-details.foldable > summary:hover {
-  background: var(--panel-strong);
-}
-
 .foldContent {
-  padding: 14px;
+  padding: 12px 14px;
   border-top: 1px solid var(--line);
   background: var(--bg-subtle);
   display: grid;
-  gap: 12px;
+  gap: 10px;
 }
 
-/* Empty State */
 .empty {
   padding: 36px 16px;
   text-align: center;
@@ -564,10 +545,9 @@ details.foldable > summary:hover {
 }
 
 .empty span {
-  font-size: 0.825rem;
+  font-size: 0.8rem;
 }
 
-/* Login Component */
 .login {
   min-height: 100dvh;
   display: grid;
