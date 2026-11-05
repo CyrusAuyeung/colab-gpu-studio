@@ -405,8 +405,8 @@ class Repository:
                 data.update(batch_id=batch_id, queue_order=index, state="queued",
                             execution_policy={**data.get("execution_policy", {}), **policy},
                             provider=data.get("execution_policy", {}).get("provider", "mock"))
-                if data['provider'] != 'mock':
-                    raise ValueError('batch real provider is not authorized')
+                if data['provider'] not in {'mock', 'colab'}:
+                    raise ValueError('batch provider is not authorized')
                 data['compatibility_signature'] = digest({
                     'provider':data['provider'],
                     'environment':{k:v for k,v in (data.get('snapshot') or {}).items()

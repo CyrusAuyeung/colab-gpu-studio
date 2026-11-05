@@ -37,3 +37,35 @@ def test_colab_specs_real_disabled_is_clear_409(monkeypatch, tmp_path):
 
 def test_mock_specs_still_work(tmp_path):
     assert client(tmp_path).get("/api/gpu/compute/specs?provider=mock").status_code == 200
+
+
+def _batch_client(tmp_path):
+    from app.batch_routes import build_batch_router
+    from app.job_schemas import JobInput
+    app = FastAPI()
+
+    async def api_error(_request: Request, exc: APIError):
+        return JSONResponse({"error": {"code": exc.code}}, status_code=exc.status)
+
+    app.add_exception_handler(APIError, api_error)
+    app.include_router(build_batch_router(JobInput, lambda *a, **k: {}, lambda j: j), prefix="/api/gpu")
+    app.dependency_overrides[get_store] = lambda: Store(f"sqlite:///{tmp_path / 'b.sqlite'}")
+    app.dependency_overrides[current_user] = lambda: {"id": "u1", "role": "user"}
+    return TestClient(app)
+
+
+def _body(mode):
+    job = {"project_id": "p", "model_id": "m", "workflow_key": "w", "workflow_version": 1,
+           "execution_policy": {"provider": "colab"}}
+    return {"jobs": [job], "mode": mode}
+
+
+def test_real_batch_blocked_when_offline_or_wrong_mode(monkeypatch, tmp_path):
+    c = _batch_client(tmp_path)
+    monkeypatch.setenv("STUDIO_OFFLINE_TEST", "1")
+    r = c.post("/api/gpu/batches", json=_body("batch"), headers={"Idempotency-Key": "k"})
+    assert r.status_code == 403
+    monkeypatch.delenv("STUDIO_OFFLINE_TEST")
+    monkeypatch.setenv("GPU_REAL_ENABLED", "1")
+    r = c.post("/api/gpu/batches", json=_body("smart"), headers={"Idempotency-Key": "k"})
+    assert r.status_code == 422

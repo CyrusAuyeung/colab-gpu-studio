@@ -475,10 +475,12 @@ export default function App() {
           idle_grace_minutes: 0 as const,
         },
       };
-      if (runtime === 'mock') {
+      if (runtime === 'mock' || batchCount > 1) {
+        // 真实 GPU 的多张任务走「批次」：同批共用一台机器（智能策略暂只支持模拟）
+        const mode = runtime === 'mock' ? batchMode : 'batch';
         await createGpuBatch(Array.from({length:batchCount},(_,index)=>({...body,
           params:{...body.params,...(typeof body.params.seed === 'number' && body.params.seed >= 0 ? {seed:body.params.seed+index} : {})}})),
-          batchMode,120,idempotencyKey.current);
+          mode,120,idempotencyKey.current);
       } else {
         await createGpuJob(body, idempotencyKey.current);
       }
