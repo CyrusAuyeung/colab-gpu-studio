@@ -1,3 +1,7 @@
+> 开发中，未完成原规格全部验收，未部署。当前版本与剩余门槛见 [docs/CURRENT_STATUS.md](docs/CURRENT_STATUS.md)。真实GPU禁令持续生效。
+
+> 本地 v0.2 重构尚未完成、未发布：本轮仅 Mock/离线测试，禁止真实 Colab/Drive 业务调用、Runtime 分配及 CU 消耗。当前增量与已知缺口见 [离线实施记录](docs/OFFLINE_IMPLEMENTATION.md)，真实验证清单见 [REAL_GPU_VALIDATION](docs/REAL_GPU_VALIDATION.md)。以下原版本说明保留为基线文档。
+
 # Colab GPU Studio
 
 用手机就能调 Colab GPU 跑 ComfyUI 的个人 AI 工作台（出图 + H3 视频）。
@@ -89,3 +93,9 @@ npm --prefix web run build
 - [LINUX DO](https://linux.do)
 
 欢迎大家提 Issue、发 PR 一起完善功能或分享更好用的工作流！如果觉得有用，欢迎点个 Star 支持一下~
+
+### 可重复离线验收（不启动真实 GPU）
+
+依赖安装完成后运行 `uv run python scripts/verify_offline.py`。该命令隔离配置，执行后端测试、Ruff、前端契约及构建，并自行启动/关闭两套临时 Mock 服务，运行批次、失败重试及长列表浏览器测试。浏览器来源必须为本机 `127.0.0.1`；可通过 `OFFLINE_CHROMIUM` 指定 Chromium 可执行文件。测试日志与网络审计保存在 `docs/offline-evidence/`，仅所有检查通过后写入 `verification-run.json`。
+
+`.github/workflows/offline.yml` 提供同一命令的 CI 配置；当前仅本地执行验证，尚未在 GitHub Actions 上运行。依赖安装会访问软件包仓库，但验收阶段禁止真实 Colab、OAuth、Drive 业务及 GPU 调用。此验收不证明真实云存储或模型可用。

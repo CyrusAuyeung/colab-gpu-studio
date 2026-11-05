@@ -2,6 +2,7 @@
 
 import argparse
 import logging
+import os
 import signal
 import time
 
@@ -32,6 +33,10 @@ def main():
         try:
             scheduler = Scheduler(store)
             result = scheduler.watchdog() if args.mode == "watchdog" else scheduler.tick()
+            if args.mode == "worker" and os.getenv("STUDIO_ATELIER_ENABLED", "0") == "1":
+                from .atelier_routes import auto_export_tick
+
+                auto_export_tick(store)
             if result.get("advanced"):
                 log.info("job=%s state=%s", result.get("job_id"), result.get("state"))
         except Exception as exc:

@@ -51,6 +51,7 @@ _PUBLISH_NODE_ALLOWLIST = {
     "CreateVideo",
     "MiniMaxH3ReferenceToVideo",
     "MiniMaxH3SigmaShift",
+    "ConditioningKrea2Rebalance",
 }
 
 

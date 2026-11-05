@@ -153,7 +153,18 @@ class Scheduler:
                 return current
         if job.get("prep"):
             message = _PREP_TEXT.get(message, message.replace("GPU", "CPU"))
+        transition = getattr(self.store, 'transition_job', None)
+        if transition:
+            return transition(job['id'],job.get('owner_id'),state,message,patch,self.clock(),expected_state=job.get('state'),expected_execution_id=job.get('execution_id'))
         updated = self._update("jobs", job["id"], {"state": state, **patch}, job.get("owner_id"))
+        execution_id = updated.get('execution_id')
+        if execution_id and updated.get('batch_id') and state in TERMINAL_STATES | {'running', 'uploading'}:
+            execution = self._get('executions', execution_id, updated.get('owner_id'))
+            if execution:
+                execution_patch = {'state': state}
+                if state in TERMINAL_STATES:
+                    execution_patch.update(finished_at=self.clock(), error_code=updated.get('error_code'))
+                self._update('executions', execution_id, execution_patch, updated.get('owner_id'))
         self._event(updated, state, message, patch.get("progress"))
         return updated
 
@@ -240,7 +251,7 @@ class Scheduler:
 
     @staticmethod
     def _lease_blocks(lease: dict) -> bool:
-        return lease.get("state") in {"creating", "active", "cleanup_pending"}
+        return lease.get("state") in {"creating", "active", "busy", "idle", "cleanup_pending", "quarantined", "releasing"}
 
     def _has_capacity_blocker(self, job: dict) -> bool:
         return any(self._lease_blocks(x) and x.get("owner_job_id") != job["id"] for x in self._leases_for())
@@ -294,8 +305,12 @@ class Scheduler:
         return True
 
     def _lease(self, job: dict) -> dict | None:
+        if job.get("lease_id"):
+            lease=self._get("leases", job["lease_id"], job.get("owner_id"))
+            return lease if lease and lease.get('owner_job_id')==job['id'] else None
         return next(
-            (x for x in self._leases_for(job.get("owner_id")) if x.get("owner_job_id") == job["id"]), None
+            (x for x in self._leases_for(job.get("owner_id")) if x.get("owner_job_id") == job["id"]
+             and not (job.get('attempt_retry_keys') and x.get('state')=='deleted')), None
         )
 
     def _ensure_lease(self, job: dict) -> dict:
@@ -469,6 +484,8 @@ class Scheduler:
         if handle is None:
             return False
         try:
+            if getattr(provider,'is_mock',False) and hasattr(provider,'recover_handle'):
+                handle=provider.recover_handle(handle)
             status = provider.inspect(handle)
         except Exception as exc:
             self._update(
@@ -550,6 +567,8 @@ class Scheduler:
             handle = provider.create(spec, lease["request_id"], job["id"], lease["runtime_id"])
             if not isinstance(handle, dict) or not handle.get("runtime_name"):
                 raise ComputeError("provider returned an unknown runtime handle")
+            if getattr(provider,'is_mock',False) and hasattr(provider,'bind_owner'):
+                handle=provider.bind_owner(handle,job.get('owner_id'))
             handle = {
                 **handle,
                 "runtime_id": lease["runtime_id"],
@@ -585,6 +604,9 @@ class Scheduler:
         )
 
     def _begin_failure(self, job: dict, code: str, message: str) -> dict:
+        current = self.store.get("jobs", job["id"], job.get("owner_id"))
+        if current and current.get("state") in TERMINAL_STATES | {"cleaning_up", "cleanup_pending"}:
+            return current
         lease = self._lease(job)
         # No provider create was attempted, so a lease without a handle cannot
         # refer to an external runtime. Mark it reconciled without an API call.
@@ -629,9 +651,16 @@ class Scheduler:
             return self._begin_failure(job, "gpu_lease_missing", "GPU lease is missing")
         execution_id = job.get("execution_id")
         if execution_id:
-            return self._set_state(job, "running", "GPU execution recovered")
-        execution_id = str(uuid.uuid4())
-        job = self._update("jobs", job["id"], {"execution_id": execution_id}, job.get("owner_id"))
+            execution=self._get('executions',execution_id,job.get('owner_id'))
+            if not execution or execution.get('state')!='starting':
+                return self._set_state(job, "running", "GPU execution recovered")
+        prepare=getattr(self.store,'prepare_execution',None)
+        if prepare:
+            job=prepare(job['id'],job['owner_id'],lease['id'],self.clock())
+            execution_id=job['execution_id']
+        else:
+            execution_id = str(uuid.uuid4())
+            job = self._update('jobs',job['id'],{'execution_id':execution_id},job.get('owner_id'))
         try:
             # The Drive token is attached to an in-memory copy only; it is never persisted.
             result = self._executor(job).start(
@@ -661,13 +690,25 @@ class Scheduler:
             return None
 
     def _run(self, job: dict) -> dict:
+        if float(job.get('poll_retry_at') or 0) > self.clock():
+            return job
         lease = self._lease(job)
         if not lease:
             return self._begin_failure(job, "gpu_lease_missing", "GPU lease is missing")
         try:
             result = self._executor(job).poll(lease["handle"], job)
         except Exception as exc:
+            from .mcp import MCPTransient
+
+            retries = int(job.get('poll_retry_count') or 0) + 1
+            if isinstance(exc, MCPTransient) and retries <= 5:
+                return self._set_state(job, 'running', 'GPU connection interrupted; retry pending',
+                    poll_retry_count=retries, poll_retry_at=self.clock() + min(2**retries, 30))
             return self._begin_failure(job, "gpu_poll_failed", self._safe_error(exc))
+        if job.get('poll_retry_count') or job.get('poll_retry_at'):
+            job = self._set_state(job, 'running', 'GPU connection recovered', poll_retry_count=0, poll_retry_at=0)
+        if result.get('execution_id') not in {None,job.get('execution_id')}:
+            return self._begin_failure(job,'gpu_execution_id_mismatch','poll execution identity mismatch')
         state = result.get("state")
         timings = result.get("timings") if isinstance(result.get("timings"), dict) else None
         if state == "running":
@@ -690,6 +731,20 @@ class Scheduler:
             )
         if state != "completed":
             return self._begin_failure(job, "gpu_invalid_poll", "invalid GPU poll state")
+        if 'artifacts' in result:
+            from .output_protocol import verify_output
+            try:
+                manifest=result['artifacts']
+                if not isinstance(manifest,list) or not 1 <= len(manifest) <= 100:
+                    raise ComputeError('invalid artifact manifest count')
+                if result.get('execution_id') != job.get('execution_id'):
+                    raise ComputeError('artifact execution mismatch')
+                verified=[verify_output(job,item)[0] for item in manifest]
+                return self._set_state(job,'uploading','GPU execution completed',outputs=verified,
+                                       output_bytes=sum(item['size_bytes'] for item in verified),
+                                       worker_timings=timings or {})
+            except Exception as exc:
+                return self._begin_failure(job,'gpu_output_invalid',self._safe_error(exc))
         raw_outputs = result.get("outputs")
         if not isinstance(raw_outputs, list) or not raw_outputs:
             return self._begin_failure(job, "gpu_empty_outputs", "GPU execution produced no outputs")
@@ -767,9 +822,6 @@ class Scheduler:
     def _upload(self, job: dict) -> dict:
         outputs, assets = job.get("outputs") or [], []
         report = None
-        if job.get("prep"):  # a cache-fill job produces no assets; keep its report in the job result
-            report = next((o.get("metadata") for o in outputs), None)
-            outputs = []
         if self.storage_factory:
             storage = self._factory(self.storage_factory, job)
         elif os.getenv("GPU_STORAGE", "local").strip().lower() == "drive":
@@ -785,7 +837,22 @@ class Scheduler:
             result_metadata["prep_report"] = report
         metadata_record = None
         try:
+            if job.get('prep'):
+                for output in outputs:
+                    if 'storage' in output:
+                        from .output_protocol import read_diagnostic_report
+                        report=read_diagnostic_report(job,output)
+                    elif isinstance(output.get('metadata'),dict):
+                        report=output['metadata']
+                if not isinstance(report,dict):
+                    raise ComputeError('prep output missing verified diagnostic report')
+                outputs=[]
+                result_metadata['prep_report']=report
             for index, output in enumerate(outputs):
+                if 'storage' in output:
+                    from .output_protocol import commit_output
+                    assets.append(commit_output(self.db_store,job,output,result_metadata,storage=storage))
+                    continue
                 content = output.get("content", b"")
                 if output.get("content_encoding") == "base64":
                     content = base64.b64decode(content, validate=True)
@@ -871,12 +938,13 @@ class Scheduler:
             "GPU outputs persisted",
             output_asset_ids=output_asset_ids,
             persisted_outputs=assets,
+            **({'prep_report':report} if report is not None else {}),
             cleanup_final_state="completed",
         )
 
     def _record_usage(self, job: dict, lease: dict, stopped_at: float) -> None:
         if self._list("usage", job.get("owner_id")):
-            if any(row.get("job_id") == job.get("id") for row in self._list("usage", job.get("owner_id"))):
+            if any(row.get("job_id") == job.get("id") and row.get('execution_id')==job.get('execution_id') for row in self._list("usage", job.get("owner_id"))):
                 return
         started = float(job.get("started_epoch") or lease.get("created_epoch") or stopped_at)
         elapsed_minutes = max(0.0, stopped_at - started) / 60.0
@@ -885,6 +953,7 @@ class Scheduler:
         estimate = 0.0 if is_mock else elapsed_minutes * rate
         payload = {
             "job_id": job["id"],
+            "execution_id": job.get('execution_id'),
             "provider": self._provider_name(job),
             "mock": is_mock,
             "units": estimate,
@@ -899,7 +968,11 @@ class Scheduler:
             "simulated": is_mock,
             "simulated_units": float(job.get("simulated_units") or 0),
         }
-        self._create("usage", job["owner_id"], payload)
+        record_usage=getattr(self.store,'record_usage_once',None)
+        if record_usage:
+            record_usage(job['owner_id'],payload)
+        else:
+            self._create("usage", job["owner_id"], payload)
         self._update(
             "jobs",
             job["id"],
@@ -909,7 +982,35 @@ class Scheduler:
 
     def _cleanup(self, job: dict) -> dict:
         lease = self._lease(job)
+        if lease and job.get("batch_id") and job.get("cleanup_final_state") == "completed":
+            waiting = [j for j in self._list("jobs", job["owner_id"])
+                       if j.get("batch_id") == job["batch_id"] and j["state"] not in TERMINAL_STATES
+                       and j["id"] != job["id"] and not j.get("cancel_requested")]
+            waiting.sort(key=lambda j: j.get("queue_order", 0))
+            next_job = waiting[0] if waiting else None
+            if next_job and hasattr(self.store,'handoff_lease'):
+                with self.db_store.dispatch_lock() as acquired:
+                    if not acquired:
+                        return job
+                    transferred=self.store.handoff_lease(job['owner_id'],job['id'],next_job['id'],lease['id'],self.clock())
+                if transferred:
+                    self._event(job,'completed','Mock outputs verified; lease reused')
+                    return self._get('jobs',job['id'],job['owner_id'])
         final_state = job.get("cleanup_final_state") or job.get("requested_outcome") or "failed"
+        policy=job.get('execution_policy') or {}
+        if (lease and job.get('batch_id') and final_state=='completed'
+                and policy.get('mode')=='smart' and self._provider_name(job)=='mock'
+                and self.clock()<float(lease.get('deadline_epoch') or 0)):
+            with self.db_store.dispatch_lock() as acquired:
+                if not acquired:
+                    return job
+                self._update('leases',lease['id'],{'state':'idle','current_job_id':None,
+                    'compatibility_signature':job.get('compatibility_signature'),
+                    'idle_deadline_at':min(self.clock()+int(policy.get('idle_seconds',120)),lease['deadline_epoch']),
+                    'last_active_at':self.clock()},job['owner_id'])
+                if job.get('execution_id'):
+                    self._update('executions',job['execution_id'],{'state':'completed','finished_at':self.clock()},job['owner_id'])
+                return self._set_state(job,'completed','Mock outputs verified; idle lease retained')
         if not lease:
             return self._set_state(job, final_state, "GPU cleanup completed")
         if lease.get("state") == "deleted":
@@ -1006,6 +1107,14 @@ class Scheduler:
         if state == "validating":
             return self._validate(job)
         if state == "waiting_for_capacity":
+            if job.get('compatibility_signature') and hasattr(self.store,'attach_idle_lease'):
+                with self.db_store.dispatch_lock() as acquired:
+                    if not acquired:
+                        return job
+                    for idle in self._leases_for(job['owner_id']):
+                        if self.store.attach_idle_lease(job['owner_id'],job['id'],idle['id'],self.clock()):
+                            job=self._get('jobs',job['id'],job['owner_id'])
+                            break
             if self._has_capacity_blocker(job):
                 return job
             if self._await_prep(job):
@@ -1103,6 +1212,8 @@ class Scheduler:
             return False
         try:
             provider = self._provider(job)
+            if getattr(provider,'is_mock',False) and hasattr(provider,'recover_handle'):
+                handle=provider.recover_handle(handle)
             status = provider.inspect(handle)
             confirmed = bool(status.get("deleted"))
             if not confirmed:
@@ -1164,6 +1275,9 @@ class Scheduler:
             if current and current.get("state") != before:
                 recovered += 1
         for lease in leases:
+            if lease.get('state')=='idle' and self.clock()<min(
+                    float(lease.get('idle_deadline_at') or 0),float(lease.get('deadline_epoch') or 0)):
+                continue
             associated = job_by_id.get(lease.get("owner_job_id"))
             expired = float(lease.get("deadline_epoch") or 0) < self.clock()
             if (associated is None and expired) or (
@@ -1181,7 +1295,7 @@ class Scheduler:
             raise KeyError(job_id)
         if job.get("state") in TERMINAL_STATES:
             return job
-        if job.get("state") == "queued":
+        if job.get("state") == "queued" and not self._lease(job):
             return self._set_state(
                 job, "cancelled", "GPU job cancelled", cancel_requested=True, requested_outcome="cancelled"
             )

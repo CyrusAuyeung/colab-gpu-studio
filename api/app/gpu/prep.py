@@ -28,7 +28,16 @@ def cache_key(snapshot: dict) -> str:
     manifest = snapshot.get("manifest") or {}
     weights = manifest.get("weight_files") or snapshot.get("weight_files") or []
     # Picked LoRAs ride along per job; they must not split the base cache.
-    files = sorted((w.get("repo_id"), w.get("filename"), w.get("revision"), w.get("sha256")) for w in weights if not w.get("lora"))
+    files = []
+    for weight in weights:
+        if weight.get("lora"):
+            continue
+        if weight.get("source") == "drive":
+            files.append(("drive", str(weight.get("drive_file_id")), str(weight.get("target")), str(weight.get("sha256"))))
+        else:
+            # Keep the historical HF tuple byte-for-byte compatible.
+            files.append((weight.get("repo_id"), weight.get("filename"), weight.get("revision"), weight.get("sha256")))
+    files.sort(key=lambda value: tuple("" if part is None else str(part) for part in value))
     # Prep snapshots carry the commit at the top level; user-job snapshots only inside the reviewed manifest.
     commit = snapshot.get("comfyui_commit") or manifest.get("comfyui_commit") or (manifest.get("dependencies") or {}).get("comfyui_commit")
     nodes = manifest.get("custom_nodes") or (manifest.get("dependencies") or {}).get("custom_nodes") or []

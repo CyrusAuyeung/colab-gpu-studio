@@ -43,6 +43,9 @@ UPLOAD_CHUNK = 64 * 1024 * 1024  # must be a multiple of 256 KiB
 REVIEWED_CUSTOM_NODES = {
     ("https://github.com/xmarre/Comfyui_Minimax_h3_latent_Upscaler-Plus", "1ddcc33e9b674aaabbccc3808fe36e1a47bdd36d"):
         "Comfyui_Minimax_h3_latent_Upscaler",
+    # Read-only reviewed fork: pure torch node, no install-time dependency beyond ComfyUI.
+    ("https://github.com/huwhitememes/comfyui-krea2-conditioning", "729cda4fade982988a375b01928f515458407a5c"):
+        "comfyui-krea2-conditioning",
 }
 REPO_ID = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 
@@ -151,9 +154,25 @@ def _validate_weights(manifest: dict) -> list[dict]:
     for item in weights:
         if not isinstance(item, dict):
             raise WorkerError("weight manifest is invalid")
-        repo_id, filename, revision, sha256 = (
-            item.get(key) for key in ("repo_id", "filename", "revision", "sha256")
-        )
+        source = item.get("source", "huggingface")
+        if source not in {"huggingface", "drive"}:
+            raise WorkerError("weight source is unknown")
+        sha256 = item.get("sha256")
+        if not isinstance(sha256, str) or not SHA256.fullmatch(sha256):
+            raise WorkerError("weight sha256 is not locked")
+        if source == "drive":
+            drive_file_id = item.get("drive_file_id")
+            if not isinstance(drive_file_id, str) or not DRIVE_ID.fullmatch(drive_file_id):
+                raise WorkerError("Drive file id is invalid")
+            size = item.get("size")
+            if isinstance(size, bool) or not isinstance(size, int) or size <= 0:
+                raise WorkerError("Drive weight size must be a positive integer")
+            target = item.get("target")
+            if not isinstance(target, str) or not target or target.startswith("/") or ".." in Path(target).parts:
+                raise WorkerError("weight target path traversal refused")
+            checked.append({"source": "drive", "drive_file_id": drive_file_id, "sha256": sha256.lower(), "target": target, "size": size})
+            continue
+        repo_id, filename, revision = (item.get(key) for key in ("repo_id", "filename", "revision"))
         if not isinstance(repo_id, str) or not REPO_ID.fullmatch(repo_id):
             raise WorkerError("weight repo_id is not an allowed Hugging Face repository")
         if not isinstance(filename, str) or not filename or filename.startswith("/"):
@@ -163,24 +182,13 @@ def _validate_weights(manifest: dict) -> list[dict]:
             raise WorkerError("weight filename path traversal refused")
         if not isinstance(revision, str) or not COMMIT.fullmatch(revision):
             raise WorkerError("weight revision must be a fixed commit")
-        if not isinstance(sha256, str) or not SHA256.fullmatch(sha256):
-            raise WorkerError("weight sha256 is not locked")
         target = item.get("target", filename)
-        if not isinstance(target, str) or target.startswith("/") or ".." in Path(target).parts:
+        if not isinstance(target, str) or not target or target.startswith("/") or ".." in Path(target).parts:
             raise WorkerError("weight target path traversal refused")
         size = item.get("size")
         if size is not None and (isinstance(size, bool) or not isinstance(size, int) or size <= 0):
             raise WorkerError("weight size must be a positive integer")
-        checked.append(
-            {
-                "repo_id": repo_id,
-                "filename": filename,
-                "revision": revision,
-                "sha256": sha256.lower(),
-                "target": target,
-                "size": size,
-            }
-        )
+        checked.append({"repo_id": repo_id, "filename": filename, "revision": revision, "sha256": sha256.lower(), "target": target, "size": size})
     return checked
 
 
@@ -587,13 +595,13 @@ def _drive_cache(payload: dict, folder_key: str = "folder_id") -> DriveCache | N
 
 
 def _check_loras(graph: dict, manifest: dict, user_files: list[dict]) -> None:
-    """Fail before any download if a picked (curated/ or user/) LoRA is not brought in by this job."""
+    """Fail before any download if every referenced LoRA is not in this job."""
     have = {w.get("target", "").removeprefix("loras/") for w in manifest.get("weight_files") or []}
     have |= {f.get("target") for f in user_files}
     for node in graph.values():
         if isinstance(node, dict) and node.get("class_type") == "LoraLoaderModelOnly":
             name = node.get("inputs", {}).get("lora_name")
-            if str(name).startswith(("curated/", "user/")) and name not in have:
+            if name not in have:
                 raise WorkerError(f"LoRA 文件没有随任务下发：{name}")
 
 
@@ -612,35 +620,88 @@ def _restore_user_loras(comfy: Path, files: list[dict], cache: DriveCache | None
 def _restore_weights(
     comfy: Path, manifest: dict, timeout: float, cache: DriveCache | None, prep: bool
 ) -> list[dict]:
-    """Bring every reviewed weight file in, four at a time.
-
-    GPU job (``prep`` false): Drive hit -> local disk; miss -> Hugging Face -> local disk, never uploaded.
-    CPU prep job (``prep`` true): Drive hit -> nothing to do; miss -> Hugging Face -> Drive, local copy dropped.
-    """
+    """Bring every reviewed weight file in, four at a time."""
     checked = _validate_weights(manifest)
     models = (comfy / "models").resolve()
     models.mkdir(mode=0o700, parents=True, exist_ok=True)
     if prep and cache is not None:
-        for item in checked:  # create folders once, before threads race to create them
+        for item in checked:
             cache._parent(item["target"], create=True)  # noqa: SLF001
+
+    def drive_entry(item: dict) -> dict:
+        if cache is None:
+            raise WorkerError("Drive weight import is unavailable: Drive cache is not configured")
+        try:
+            fields = urlencode({"fields": "id,size,md5Checksum,mimeType,trashed"})
+            entry = cache._json("GET", f"{DRIVE_API}/files/{quote(item['drive_file_id'])}?{fields}")  # noqa: SLF001
+        except Exception as exc:  # noqa: BLE001 - make Drive failures explicit and safe
+            raise WorkerError(f"Drive weight metadata unavailable: {_safe_error(exc)[:200]}") from exc
+        if (
+            entry.get("id") != item["drive_file_id"]
+            or entry.get("trashed") is not False
+            or not isinstance(entry.get("mimeType"), str)
+            or entry.get("mimeType") == FOLDER_MIME
+            or int(entry.get("size") or 0) != item["size"]
+            or not isinstance(entry.get("md5Checksum"), str)
+        ):
+            raise WorkerError("Drive weight metadata failed id/trashed/type/size/md5 checks")
+        return entry
+
+    def verify_file(path: Path, item: dict) -> tuple[str, str, int]:
+        if not path.is_file():
+            raise WorkerError("Drive weight download produced no file")
+        sha256, md5 = _hash_file(path)
+        size = path.stat().st_size
+        if sha256 != item["sha256"] or size != item["size"]:
+            path.unlink(missing_ok=True)
+            raise WorkerError("Drive weight sha256 or size mismatch")
+        return sha256, md5, size
 
     def restore(item: dict, scratch: Path) -> dict:
         started = time.time()
         target = (models / item["target"]).resolve()
         if models not in target.parents:
             raise WorkerError("model target escaped Comfy models directory")
+        is_drive = item.get("source") == "drive"
         record = {"target": item["target"], "sha256": item["sha256"]}
+        if is_drive:
+            record.update(source="drive", drive_file_id=item["drive_file_id"])
         if cache is not None:
             try:
                 entry = cache.lookup(item["target"], item["sha256"], item["size"])
-                if entry and prep:
-                    return {**record, "source": "drive", "seconds": round(time.time() - started, 1)}
-                if entry:
+                if entry and not is_drive:
+                    if prep:
+                        return {**record, "source": "drive", "seconds": round(time.time() - started, 1)}
                     cache.fetch(entry, target)
                     return {**record, "source": "drive", "seconds": round(time.time() - started, 1)}
-            except Exception as exc:  # noqa: BLE001 - a broken cache falls back to Hugging Face
+                if entry and is_drive:
+                    cache.fetch(entry, target)
+                    verify_file(target, item)
+                    if prep:
+                        target.unlink(missing_ok=True)
+                    return {**record, "seconds": round(time.time() - started, 1)}
+            except Exception as exc:  # noqa: BLE001 - Drive sources never fall back to Hugging Face
+                if is_drive:
+                    raise WorkerError(f"Drive weight import failed: {_safe_error(exc)[:200]}") from exc
                 record["cache_error"] = _safe_error(exc)[:200]
                 target.unlink(missing_ok=True)
+        if is_drive:
+            entry = drive_entry(item)
+            try:
+                cache.fetch(entry, target)  # type: ignore[union-attr]
+                sha256, md5, size = verify_file(target, item)
+                if prep:
+                    cache.store(item["target"], target, sha256, md5, size)  # type: ignore[union-attr]
+                    target.unlink(missing_ok=True)
+                    record["cache_stored"] = True
+                record["seconds"] = round(time.time() - started, 1)
+                return record
+            except WorkerError:
+                target.unlink(missing_ok=True)
+                raise
+            except Exception as exc:  # noqa: BLE001 - preserve explicit Drive failure
+                target.unlink(missing_ok=True)
+                raise WorkerError(f"Drive weight import failed: {_safe_error(exc)[:200]}") from exc
         try:
             from huggingface_hub import hf_hub_download
         except Exception as exc:
@@ -719,6 +780,22 @@ def _write_input_files(comfy: Path, snapshot: dict) -> None:
         if not data or len(data) > MAX_INPUT_BYTES:
             raise WorkerError("input file is empty or too large")
         (folder / name).write_bytes(data)
+
+
+def _stream_output(response, target: Path, limit: int) -> int:
+    total = 0
+    partial = target.with_suffix(target.suffix + '.partial')
+    try:
+        with partial.open('wb') as output:
+            while chunk := response.read(1024 * 1024):
+                total += len(chunk)
+                if total > limit:
+                    raise WorkerError('outputs exceed configured bound')
+                output.write(chunk)
+        partial.replace(target)
+        return total
+    finally:
+        partial.unlink(missing_ok=True)
 
 
 def _run_comfy(root: Path, payload: dict, manifest: dict, graph: dict, stages: _Stages) -> list[dict]:
@@ -807,23 +884,21 @@ def _run_comfy(root: Path, payload: dict, manifest: dict, graph: dict, stages: _
                         mime = _OUTPUT_MIME.get(Path(filename).suffix.lower())
                         if mime is None:  # SaveVideo reports videos under "images"; judge by extension
                             continue
-                        query = f"filename={filename}&subfolder={entry.get('subfolder', '')}&type={entry.get('type', 'output')}"
+                        query = urlencode({'filename':filename,'subfolder':entry.get('subfolder',''),'type':entry.get('type','output')})
                         request = Request(
                             api + "/view?" + query, headers={"Accept": "application/octet-stream"}
                         )
-                        with urlopen(request, timeout=30) as response:
-                            data = response.read(MAX_OUTPUT_BYTES - total + 1)
-                        if total + len(data) > MAX_OUTPUT_BYTES:
-                            raise WorkerError("outputs exceed 100MB bound")
                         target = output_dir / filename
-                        target.write_bytes(data)
-                        total += len(data)
+                        output_limit = payload.get('_local_artifact_limit', MAX_OUTPUT_BYTES)
+                        with urlopen(request, timeout=30) as response:
+                            size = _stream_output(response, target, output_limit - total)
+                        total += size
                         outputs.append(
                             {
                                 "filename": filename,
                                 "mime": mime,
                                 "path": str(target.relative_to(root)),
-                                "size": len(data),
+                                "size": size,
                                 "metadata": {
                                     "comfy_commit": commit,
                                     "weights": weights,
@@ -883,7 +958,7 @@ def _run_prep(root: Path, payload: dict, manifest: dict, stages: _Stages) -> lis
     ]
 
 
-def run_job(payload: dict, root: Path) -> None:
+def run_job(payload: dict, root: Path, *, artifact_store=None) -> None:
     stages = _Stages(root)
     try:
         _status(root, "running")
@@ -895,9 +970,21 @@ def run_job(payload: dict, root: Path) -> None:
         elif snapshot.get("prep") is True:
             outputs = _run_prep(root, payload, manifest, stages)
         else:
-            outputs = _run_comfy(root, payload, manifest, graph, stages)
-        _atomic_json(root / "meta.json", {"execution_id": payload.get("execution_id"), "outputs": outputs})
-        _status(root, "completed", outputs=outputs, timings=stages.timings)
+            local_payload = {**payload, '_local_artifact_limit': min(artifact_store.max_size, 2*1024**3)} if artifact_store is not None else {k:v for k,v in payload.items() if k!='_local_artifact_limit'}
+            outputs = _run_comfy(root, local_payload, manifest, graph, stages)
+        if artifact_store is not None:
+            artifacts = []
+            for item in outputs:
+                source = root / item['path']
+                if source.is_symlink() or root.resolve() not in source.resolve().parents:
+                    raise WorkerError('worker output escaped execution directory')
+                artifacts.append(artifact_store.publish_file(
+                    payload['owner_id'], payload['execution_id'], source, item['mime']))
+            _atomic_json(root / 'meta.json', {'execution_id': payload['execution_id'], 'artifacts': artifacts})
+            _status(root, 'completed', artifacts=artifacts, timings=stages.timings)
+        else:
+            _atomic_json(root / "meta.json", {"execution_id": payload.get("execution_id"), "outputs": outputs})
+            _status(root, "completed", outputs=outputs, timings=stages.timings)
     except Exception as exc:  # noqa: BLE001 - worker must persist every failure
         stages.end()
         message = _safe_error(exc)
@@ -905,6 +992,29 @@ def run_job(payload: dict, root: Path) -> None:
         if log.is_file():
             message = (message + " | comfy.log: " + log.read_text("utf-8", "replace")[-500:])[:1400]
         _status(root, "failed", error_code="gpu_worker_failed", error_message=message, timings=stages.timings)
+
+
+class _MCPManifestStore:
+    """Worker-side descriptor writer; media stays on disk for bounded MCP reads."""
+    max_size = 2 * 1024**3
+
+    def __init__(self, root):
+        self.root = root.resolve()
+
+    def publish_file(self, owner, execution, source, mime):
+        import hashlib
+
+        if not owner or not execution or source.is_symlink() or self.root not in source.resolve().parents:
+            raise WorkerError('invalid artifact identity or path')
+        size = source.stat().st_size
+        if not 0 < size <= self.max_size:
+            raise WorkerError('artifact size invalid')
+        digest = hashlib.sha256()
+        with source.open('rb') as file:
+            while chunk := file.read(1024**2):
+                digest.update(chunk)
+        return {'filename': source.name, 'path': str(source.relative_to(self.root)),
+            'mime': mime, 'size_bytes': size, 'sha256': digest.hexdigest()}
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -922,7 +1032,8 @@ def main(argv: list[str] | None = None) -> int:
             payload_path.chmod(0o600)
             _atomic_json(payload_path, {k: v for k, v in payload.items() if k != "drive_cache"})
             payload_path.chmod(0o600)
-        run_job(payload, root)
+        artifacts = _MCPManifestStore(root) if payload.get('output_transport') == 'mcp-chunks-v1' else None
+        run_job(payload, root, artifact_store=artifacts)
         return 0
     except Exception as exc:  # noqa: BLE001 - CLI boundary is fail-closed
         try:

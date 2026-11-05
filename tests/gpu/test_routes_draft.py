@@ -135,3 +135,127 @@ def test_agent_cannot_publish_or_change_budget(gpu_client, monkeypatch):
     r = c.post("/api/gpu/agent/invoke", json={"tool": "usage.inspect", "arguments": {}}, headers=auth)
     assert r.status_code == 200
     assert "test-agent-private-key" not in r.text
+
+
+def test_batch_http_idempotency_validation_and_owner_scope(gpu_client):
+    from app.gpu.repository import Repository
+    c,st,user,project,h=gpu_client
+    job=request_body(c,project)
+    body={'jobs':[job]*3,'mode':'batch'}
+    headers={'Idempotency-Key':'http-batch'}
+    first=c.post('/api/gpu/batches',json=body,headers=headers)
+    assert first.status_code==202,first.text
+    bid=first.json()['data']['id']
+    replay=c.post('/api/gpu/batches',json=body,headers=headers)
+    assert replay.status_code==202 and replay.json()['data']['id']==bid
+    assert len(Repository(st).list('jobs',user['id']))==3
+    changed=copy.deepcopy(body)
+    changed['jobs'][0]['params']['prompt']='changed'
+    assert c.post('/api/gpu/batches',json=changed,headers=headers).status_code==409
+    summary=c.get('/api/gpu/batches/'+bid)
+    assert summary.status_code==200 and len(summary.json()['data']['jobs'])==3
+    assert c.post('/api/gpu/batches/'+bid+'/cancel').status_code==200
+    assert all(j['state']=='cancelled' for j in Repository(st).list('jobs',user['id']))
+    assert c.get('/api/gpu/batches/missing').status_code==404
+    c.headers.pop('Authorization')
+    assert c.post('/api/gpu/batches',json=body,headers=headers).status_code==401
+
+
+def test_invalid_batch_is_atomic(gpu_client):
+    from app.gpu.repository import Repository
+    c,st,user,project,h=gpu_client
+    valid=request_body(c,project)
+    invalid=copy.deepcopy(valid)
+    invalid['params']['unknown']=1
+    response=c.post('/api/gpu/batches',json={'jobs':[valid,invalid]},headers={'Idempotency-Key':'bad-batch'})
+    assert response.status_code==422
+    assert not Repository(st).list('jobs',user['id'])
+
+
+def test_batch_query_reports_terminal_aggregate(gpu_client):
+    from app.gpu.repository import Repository
+    client,store,user,project,_=gpu_client
+    response=client.post('/api/gpu/batches',json={'jobs':[request_body(client,project)]},headers={'Idempotency-Key':'terminal-aggregate'})
+    batch=response.json()['data']
+    repo=Repository(store)
+    job=next(j for j in repo.list('jobs',user['id']) if j.get('batch_id')==batch['id'])
+    repo.update('jobs',job['id'],{'state':'completed'},user['id'])
+    data=client.get('/api/gpu/batches/'+batch['id']).json()['data']
+    assert data['state']=='completed'
+    assert data['finished_jobs']==1
+
+
+def test_batch_child_can_retry_through_existing_endpoint(gpu_client):
+    from app.gpu.repository import Repository
+    client,store,user,project,_=gpu_client
+    response=client.post('/api/gpu/batches',json={'jobs':[request_body(client,project)]},headers={'Idempotency-Key':'retry-batch'})
+    batch=response.json()['data']
+    repo=Repository(store)
+    job=next(j for j in repo.list('jobs',user['id']) if j.get('batch_id')==batch['id'])
+    repo.update('jobs',job['id'],{'state':'failed'},user['id'])
+    response=client.post('/api/gpu/jobs/'+job['id']+'/retry',headers={'Idempotency-Key':'retry-child'})
+    assert response.status_code==202,response.text
+    assert response.json()['data']['id']!=job['id']
+
+
+def test_normal_admission_does_not_use_second_snapshot_transaction(gpu_client,monkeypatch):
+    from app.gpu.repository import Repository
+    client,store,user,project,_=gpu_client
+    original=Repository.update
+    def reject_snapshot_update(self,kind,key,patch,owner_id=None):
+        if kind=='jobs' and 'snapshot' in patch:
+            raise RuntimeError('separate snapshot update is forbidden')
+        return original(self,kind,key,patch,owner_id)
+    monkeypatch.setattr(Repository,'update',reject_snapshot_update)
+    response=client.post('/api/gpu/jobs',json=request_body(client,project),headers={'Idempotency-Key':'atomic-admission'})
+    assert response.status_code==202,response.text
+    job=Repository(store).get('jobs',response.json()['data']['id'],user['id'])
+    assert job['snapshot']['resolved_params']==job['params']
+
+
+def test_retry_freezes_resolved_seed_and_keeps_original_evidence(gpu_client):
+    from app.gpu.repository import Repository
+    client,store,user,project,_=gpu_client
+    body=request_body(client,project)
+    body['params']['seed']=-1
+    original=client.post('/api/gpu/jobs',json=body,headers={'Idempotency-Key':'seed-original'}).json()['data']
+    repo=Repository(store)
+    repo.update('jobs',original['id'],{'state':'failed'},user['id'])
+    response=client.post('/api/gpu/jobs/'+original['id']+'/retry',headers={'Idempotency-Key':'seed-retry'})
+    assert response.status_code==202,response.text
+    retried=repo.get('jobs',response.json()['data']['id'],user['id'])
+    assert retried['resolved_seed']==original['resolved_seed']
+    assert retried['retry_of']==original['id']
+    assert repo.get('jobs',original['id'],user['id'])['state']=='failed'
+
+
+def test_system_retry_is_explicitly_rejected_without_ordinary_admission(gpu_client):
+    from app.gpu.repository import Repository
+    client,store,user,project,_=gpu_client
+    job,_=Repository(store).create_job(user['id'],{'kind':'system-cuda-smoke'},'system-fixture')
+    Repository(store).update('jobs',job['id'],{'state':'failed'},user['id'])
+    response=client.post('/api/gpu/jobs/'+job['id']+'/retry',headers={'Idempotency-Key':'no-system-bypass'})
+    assert response.status_code==409
+    assert response.json()['error']['code']=='SPECIAL_JOB_RETRY_REQUIRED'
+
+
+def test_workflow_smoke_requires_special_retry(gpu_client):
+    from app.gpu.repository import Repository
+    client,store,user,project,_=gpu_client
+    job=client.post('/api/gpu/jobs',json=request_body(client,project),headers={'Idempotency-Key':'wf-smoke-fixture'}).json()['data']
+    Repository(store).update('jobs',job['id'],{'state':'failed','snapshot':{'workflow_smoke':True}},user['id'])
+    response=client.post('/api/gpu/jobs/'+job['id']+'/retry',headers={'Idempotency-Key':'wf-no-bypass'})
+    assert response.status_code==409
+
+
+def test_attempt_endpoint_is_same_job_and_idempotent(gpu_client):
+    from app.gpu.repository import Repository
+    client,store,user,project,_=gpu_client
+    job=client.post('/api/gpu/jobs',json=request_body(client,project),headers={'Idempotency-Key':'attempt-fixture'}).json()['data']
+    Repository(store).update('jobs',job['id'],{'state':'failed'},user['id'])
+    url='/api/gpu/jobs/'+job['id']+'/attempts'
+    for _ in range(2):
+        response=client.post(url,headers={'Idempotency-Key':'same-attempt'})
+        assert response.status_code==202
+        assert response.json()['data']['id']==job['id']
+    assert client.get(url).status_code==200

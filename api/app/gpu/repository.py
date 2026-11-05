@@ -41,6 +41,17 @@ class GpuJobRow(CommonMixin, Base):
     __table_args__ = (UniqueConstraint("owner_id", "idempotency_key", name="uq_gpu_jobs_owner_idempotency"),)
 
 
+class GpuBatchRow(CommonMixin, Base):
+    __tablename__ = "gpu_batches"
+    idempotency_key: Mapped[str] = mapped_column(String(255), nullable=False)
+    body_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    __table_args__ = (UniqueConstraint("owner_id", "idempotency_key", name="uq_gpu_batches_owner_key"),)
+
+
+class GpuExecutionRow(CommonMixin, Base):
+    __tablename__ = "gpu_executions"
+
+
 class GpuLeaseRow(CommonMixin, Base):
     __tablename__ = "gpu_leases"
 
@@ -66,6 +77,8 @@ class GpuCredentialRow(CommonMixin, Base):
 
 
 _GPU_MODELS = {
+    "batches": GpuBatchRow,
+    "executions": GpuExecutionRow,
     "models": GpuModelRow,
     "workflows": GpuWorkflowRow,
     "jobs": GpuJobRow,
@@ -262,10 +275,12 @@ class Repository:
                     row.workflow_version = str(value)
             row.version += 1
             row.updated_at = utcnow()
+            if kind=='jobs' and row.data.get('batch_id'):
+                self._refresh_batch(session,row.data['batch_id'],row.owner_id)
             session.flush()
             return self._row(row)
 
-    def create_job(self, owner_id, body, idempotency_key):
+    def create_job(self, owner_id, body, idempotency_key, *, admitted=None):
         if not isinstance(body, Mapping):
             raise ValueError("job body必须是对象")  # noqa: TRY004
         if not isinstance(idempotency_key, str) or not idempotency_key:
@@ -305,6 +320,8 @@ class Repository:
                         "cancel_requested": False,
                         "output_asset_ids": [],
                     }
+                    if admitted is not None:
+                        payload.update(copy.deepcopy(admitted))
                     row = GpuJobRow(
                         id=str(uuid.uuid4()),
                         owner_id=owner_id,
@@ -329,6 +346,269 @@ class Repository:
                     raise
                 time.sleep(0.02 * (attempt + 1))
         raise RuntimeError("GPU job创建未完成")
+
+    def create_batch(self, owner_id, jobs, idempotency_key, policy, request_body=None):
+        for attempt in range(8):
+            try:
+                return self._create_batch_once(owner_id,jobs,idempotency_key,policy,request_body)
+            except IntegrityError:
+                if attempt==7:
+                    raise ValueError('batch creation contention; retry')
+            except OperationalError as exc:
+                if 'locked' not in str(exc).lower() or attempt==7:
+                    raise
+            time.sleep(0.02*(attempt+1))
+
+    def _refresh_batch(self, session, batch_id, owner_id):
+        session.flush()
+        batch=session.get(GpuBatchRow,batch_id)
+        if not batch or batch.owner_id!=owner_id:
+            return
+        jobs=list(session.scalars(select(GpuJobRow).where(
+            GpuJobRow.owner_id==owner_id,GpuJobRow.id.in_(batch.data.get('job_ids',[])))))
+        counts={state:sum(job.state==state for job in jobs) for state in ('completed','failed','cancelled')}
+        finished=sum(counts.values())
+        if jobs and finished==len(jobs):
+            state=next((name for name,count in counts.items() if count==len(jobs)),'partial')
+        else:
+            state='running' if any(job.state!='queued' for job in jobs) else 'queued'
+        batch.state=state
+        batch.data={**batch.data,'state':state,'finished_jobs':finished,'counts':counts}
+        batch.version+=1
+        batch.updated_at=utcnow()
+
+    def _create_batch_once(self, owner_id, jobs, idempotency_key, policy, request_body=None):
+        if not isinstance(jobs, list) or not 1 <= len(jobs) <= 100:
+            raise ValueError("batch requires 1..100 jobs")
+        if not isinstance(idempotency_key, str) or not 1 <= len(idempotency_key) <= 200:
+            raise ValueError("invalid idempotency key")
+        if policy.get("mode", "save") not in {"save", "smart", "batch"}:
+            raise ValueError("invalid lifecycle mode")
+        body_hash = digest(request_body if request_body is not None else {"jobs": jobs, "policy": policy})
+        with self.store.db_lock(), self.store.Session.begin() as session:
+            existing = session.scalar(select(GpuBatchRow).where(
+                GpuBatchRow.owner_id == owner_id, GpuBatchRow.idempotency_key == idempotency_key))
+            if existing:
+                if existing.body_hash != body_hash:
+                    raise ValueError("batch idempotency conflict")
+                return self._row(existing), False
+            batch_id = str(uuid.uuid4())
+            payload = {"policy_snapshot": copy.deepcopy(policy), "total_jobs": len(jobs),
+                       "finished_jobs": 0, "mode": policy.get("mode", "save"), "job_ids": [],
+                       "request_key":idempotency_key,"request_hash":body_hash}
+            for index, job in enumerate(jobs):
+                job_id = str(uuid.uuid4())
+                data = copy.deepcopy(job)
+                raw_jobs=(request_body or {}).get('jobs',[])
+                data['request_body']=copy.deepcopy(raw_jobs[index] if index<len(raw_jobs) else {
+                    k:v for k,v in job.items() if k in {'project_id','model_id','workflow_key','workflow_version','params','asset_ids','execution_policy','preset_id','loras'}})
+                data.update(batch_id=batch_id, queue_order=index, state="queued",
+                            execution_policy={**data.get("execution_policy", {}), **policy},
+                            provider=data.get("execution_policy", {}).get("provider", "mock"))
+                if data['provider'] != 'mock':
+                    raise ValueError('batch real provider is not authorized')
+                data['compatibility_signature'] = digest({
+                    'provider':data['provider'],
+                    'environment':{k:v for k,v in (data.get('snapshot') or {}).items()
+                                   if k not in {'resolved_params','bound_graph','input_files'}},
+                    'workflow_key':data.get('workflow_key'), 'workflow_version':data.get('workflow_version'),
+                    'requested_spec':data.get('requested_spec')})
+                row = GpuJobRow(id=job_id, owner_id=owner_id, project_id=data.get('project_id'),
+                                state='queued', data=data, version=0,
+                                idempotency_key=f'batch:{batch_id}:{index}', body_hash=digest(job),
+                                created_at=utcnow(), updated_at=utcnow())
+                session.add(row)
+                payload['job_ids'].append(job_id)
+            batch = GpuBatchRow(id=batch_id, owner_id=owner_id,
+                                project_id=jobs[0].get('project_id'), state='queued', version=0,
+                                data=payload, idempotency_key=idempotency_key, body_hash=body_hash,
+                                created_at=utcnow(), updated_at=utcnow())
+            session.add(batch)
+            session.flush()
+            return self._row(batch), True
+
+    def attach_idle_lease(self, owner_id, job_id, lease_id, now):
+        with self.store.db_lock(), self.store.Session.begin() as session:
+            job=session.get(GpuJobRow,job_id)
+            lease=session.get(GpuLeaseRow,lease_id)
+            if not job or not lease or job.owner_id!=owner_id or lease.owner_id!=owner_id:
+                return False
+            if (lease.state!='idle' or job.state!='waiting_for_capacity' or job.data.get('cancel_requested')
+                    or not job.data.get('compatibility_signature')
+                    or job.data['compatibility_signature']!=lease.data.get('compatibility_signature')
+                    or now>=min(float(lease.data.get('idle_deadline_at') or 0),float(lease.data.get('deadline_epoch') or 0))):
+                return False
+            lease.state='active'
+            lease.data={**lease.data,'state':'active','owner_job_id':job_id,'current_job_id':job_id,
+                        'last_active_at':now,'idle_deadline_at':None}
+            job.data={**job.data,'lease_id':lease_id,'deadline_epoch':lease.data['deadline_epoch']}
+            for row in (lease,job):
+                row.version+=1
+                row.updated_at=utcnow()
+            return True
+
+    def handoff_lease(self, owner_id, job_id, next_job_id, lease_id, now):
+        """Finish old job and transfer exclusive lease ownership in one DB transaction."""
+        with self.store.db_lock(), self.store.Session.begin() as session:
+            job=session.get(GpuJobRow,job_id)
+            following=session.get(GpuJobRow,next_job_id)
+            lease=session.get(GpuLeaseRow,lease_id)
+            if not all(row is not None and row.owner_id==owner_id for row in (job,following,lease)):
+                raise ValueError('lease handoff ownership mismatch')
+            if job.state!='cleaning_up' or following.state not in {'queued','validating','waiting_for_capacity'}:
+                return False
+            if following.data.get('lease_id') not in {None,lease_id}:
+                return False
+            others=session.scalars(select(GpuLeaseRow).where(GpuLeaseRow.owner_id==owner_id)).all()
+            if any(row.id!=lease_id and row.data.get('owner_job_id')==next_job_id and row.state!='deleted' for row in others):
+                return False
+            if following.data.get('cancel_requested') or lease.data.get('owner_job_id')!=job_id:
+                return False
+            if (job.data.get('compatibility_signature')!=following.data.get('compatibility_signature')
+                    or not job.data.get('compatibility_signature')
+                    or lease.state not in {'active','busy'}
+                    or now>=float(lease.data.get('deadline_epoch') or 0)):
+                return False
+            job.data={**job.data,'state':'completed','runtime_deleted':False,'stopped_at':now}
+            job.state='completed'
+            following.data={**following.data,'lease_id':lease_id,
+                            'deadline_epoch':lease.data['deadline_epoch']}
+            lease.data={**lease.data,'owner_job_id':next_job_id,'current_job_id':next_job_id,
+                        'last_active_at':now,'state':'active'}
+            lease.state='active'
+            execution=session.get(GpuExecutionRow,job.data.get('execution_id'))
+            if execution is not None:
+                execution.state='completed'
+                execution.data={**execution.data,'state':'completed','finished_at':now}
+            for row in (job,following,lease):
+                row.version+=1
+                row.updated_at=utcnow()
+            if job.data.get('batch_id'):
+                self._refresh_batch(session,job.data['batch_id'],owner_id)
+            return True
+
+    def record_usage_once(self, owner_id, payload):
+        # Deterministic primary key provides DB-enforced dedupe across processes.
+        identity=digest([owner_id,payload['job_id'],payload.get('execution_id')])
+        try:
+            return self.create('usage',owner_id,payload,record_id=identity)
+        except (IntegrityError, ValueError):
+            existing=self.get('usage',identity,owner_id)
+            if existing is None:
+                raise
+            return existing
+
+    def retry_attempt(self, job_id, owner_id, key):
+        """Requeue a cleaned failed Mock job; immutable snapshot and executions survive."""
+        if not key or len(key)>200:
+            raise ValueError('idempotency key required')
+        with self.store.db_lock(), self.store.Session.begin() as session:
+            job=session.scalar(select(GpuJobRow).where(GpuJobRow.id==job_id,GpuJobRow.owner_id==owner_id).with_for_update())
+            if not job:
+                raise KeyError(job_id)
+            data=copy.deepcopy(job.data)
+            keys=data.get('attempt_retry_keys') or []
+            if key in keys:
+                return self._row(job)
+            if job.state not in {'failed','cancelled'}:
+                raise ValueError('job must be failed or cancelled')
+            if data.get('provider',(data.get('execution_policy') or {}).get('provider','mock'))!='mock':
+                raise ValueError('same-job retry is currently Mock only')
+            snapshot=data.get('snapshot') or {}
+            if data.get('prep') or any(snapshot.get(k) or data.get(k) for k in ('system_smoke','workflow_smoke','prep')) or (data.get('request_body') or {}).get('kind'):
+                raise ValueError('special job requires its confirmation entry')
+            leases=session.scalars(select(GpuLeaseRow).where(GpuLeaseRow.owner_id==owner_id)).all()
+            if any(row.data.get('owner_job_id')==job_id and row.state!='deleted' for row in leases):
+                raise ValueError('lease cleanup must be confirmed before retry')
+            history=data.get('attempt_history') or []
+            history.append({k:copy.deepcopy(v) for k,v in data.items() if k not in {'snapshot','request_body','attempt_history','attempt_retry_keys'}})
+            transient={'execution_id','lease_id','outputs','output_asset_ids','persisted_outputs','error_code','error_message',
+                'cancel_requested','requested_outcome','cleanup_final_state','cleanup_attempts','cleanup_next_epoch',
+                'upload_attempts','started_epoch','stopped_at','deadline_epoch','validated_epoch','budget_reserved',
+                'runtime_deleted','actual_units','prep_report','progress','awaiting_prep',
+                'stage','worker_timings','output_bytes','started_at','finished_at','poll_retry_count','poll_retry_at'}
+            for k in transient:
+                data.pop(k,None)
+            data.update(state='queued',attempt_history=history,attempt_retry_keys=[*keys,key])
+            job.data=data
+            job.state='queued'
+            job.version+=1
+            job.updated_at=utcnow()
+            session.add(GpuEventRow(id=str(uuid.uuid4()),owner_id=owner_id,project_id=job.project_id,state='queued',
+                version=0,created_at=utcnow(),updated_at=utcnow(),data={'job_id':job_id,'state':'queued','message':'Mock retry attempt queued; previous evidence retained'}))
+            if data.get('batch_id'):
+                self._refresh_batch(session,data['batch_id'],owner_id)
+            session.flush()
+            return self._row(job)
+
+    def prepare_execution(self, job_id, owner_id, lease_id, now):
+        """Persist execution identity before start, atomically with its attempt record."""
+        with self.store.db_lock(), self.store.Session.begin() as session:
+            job=session.scalar(select(GpuJobRow).where(GpuJobRow.id==job_id,GpuJobRow.owner_id==owner_id).with_for_update())
+            lease=session.get(GpuLeaseRow,lease_id)
+            if not job or not lease or lease.owner_id!=owner_id:
+                raise KeyError(job_id)
+            if job.data.get('execution_id'):
+                return self._row(job)
+            if job.state!='loading':
+                raise ValueError('job is not ready to start')
+            execution_id=str(uuid.uuid4())
+            attempt=int(job.data.get('attempt_number') or 0)+1
+            job.data={**job.data,'execution_id':execution_id,'attempt_number':attempt}
+            job.version+=1
+            job.updated_at=utcnow()
+            session.add(GpuExecutionRow(id=execution_id,owner_id=owner_id,project_id=job.project_id,
+                state='starting',version=0,created_at=utcnow(),updated_at=utcnow(),
+                data={'job_id':job_id,'lease_id':lease_id,'attempt':attempt,
+                      'worker_session_id':lease_id,'started_at':now,'state':'starting'}))
+            session.flush()
+            return self._row(job)
+
+    def transition_job(self, job_id, owner_id, state, message, patch, now, expected_state=None, expected_execution_id=...):
+        """Commit job, execution, batch aggregate and audit event together."""
+        terminal={'completed','failed','cancelled'}
+        progress=patch.get('progress')
+        if progress is not None and (isinstance(progress,bool) or not isinstance(progress,(int,float)) or not 0<=progress<=1):
+            raise ValueError('progress必须在0到1之间')
+        with self.store.db_lock(), self.store.Session.begin() as session:
+            job=session.scalar(select(GpuJobRow).where(GpuJobRow.id==job_id,GpuJobRow.owner_id==owner_id).with_for_update())
+            if not job:
+                raise KeyError(job_id)
+            if expected_state is not None and job.state!=expected_state:
+                return self._row(job)
+            if expected_execution_id is not ... and job.data.get('execution_id')!=expected_execution_id:
+                return self._row(job)
+            if job.state in terminal:
+                return self._row(job)
+            job.state=state
+            job.data={**job.data,**copy.deepcopy(patch),'state':state}
+            job.version+=1
+            job.updated_at=utcnow()
+            execution_id=job.data.get('execution_id')
+            if execution_id and state in terminal|{'running','uploading'}:
+                execution=session.get(GpuExecutionRow,execution_id)
+                if execution and execution.owner_id!=owner_id:
+                    raise ValueError('execution owner mismatch')
+                if execution and execution.data.get('job_id') not in {None,job_id}:
+                    raise ValueError('execution job identity mismatch')
+                if execution:
+                    changes={'state':state}
+                    if state in terminal:
+                        changes.update(finished_at=now,error_code=job.data.get('error_code'))
+                    execution.state=state
+                    execution.data={**execution.data,**changes}
+                    execution.version+=1
+                    execution.updated_at=utcnow()
+            data={'job_id':job_id,'state':state,'message':message}
+            if progress is not None:
+                data['progress']=progress
+            session.add(GpuEventRow(id=str(uuid.uuid4()),owner_id=owner_id,
+                project_id=job.project_id,state=state,data=data,version=0,
+                created_at=utcnow(),updated_at=utcnow()))
+            if job.data.get('batch_id'):
+                self._refresh_batch(session,job.data['batch_id'],owner_id)
+            session.flush()
+            return self._row(job)
 
     def event(self, job_id, owner_id, state, message, progress=None):
         job = self.get("jobs", job_id, owner_id)

@@ -125,9 +125,10 @@ def test_real_smoke_rejects_over_budget_before_create(monkeypatch):
     workflow = valid_workflow(repo, model["model_id"])
     repo.update("workflows", workflow["id"], {"review_approved": True}, OWNER["id"])
     st.create("projects", OWNER["id"], {"title": "p"}, record_id="project-1")
-    monkeypatch.setenv("GPU_REAL_ENABLED", "true")
-    monkeypatch.setenv("GPU_UNIT_RATE", "2")
-    monkeypatch.setenv("GPU_MAX_JOB_UNITS", "5")
+    # Pure policy injection: never enable the real environment switch.
+    from app.gpu.compute import GpuConfig
+    monkeypatch.setattr(review_routes.GpuConfig, 'from_env',
+                        lambda: GpuConfig(real_enabled=True, unit_rate=2, max_job_units=5))
     monkeypatch.setattr(review_routes.GoogleService, "status", lambda self: {"colab": {"connected": True}})
     monkeypatch.setattr(
         review_routes.GoogleColabProvider,

@@ -70,7 +70,7 @@ class GpuConfig:
         )
         return cls(
             enabled=cls._bool("GPU_ENABLED", True),
-            real_enabled=cls._bool("GPU_REAL_ENABLED", False),
+            real_enabled=False if os.getenv("STUDIO_OFFLINE_TEST") == "1" else cls._bool("GPU_REAL_ENABLED", False),
             max_runtime_minutes=max_runtime,
             daily_units=cls._number("GPU_DAILY_UNITS", 10),
             monthly_units=cls._number("GPU_MONTHLY_UNITS", 100),
@@ -91,6 +91,7 @@ class MockColabProvider:
     is_mock = True
     _runtimes: dict[str, dict] = {}
     _deleted: set[str] = set()
+    _tombstones: dict[str,dict] = {}
 
     def __init__(
         self,
@@ -134,14 +135,39 @@ class MockColabProvider:
         self._deleted.discard(name)
         return dict(handle)
 
+    def _verify_handle(self, handle):
+        name=handle.get('runtime_name','')
+        record=self._runtimes.get(name) or self._tombstones.get(name)
+        if not record or not handle.get('mock') or any(handle.get(key)!=record.get(key) for key in ('runtime_id','request_id','job_id','owner_id')):
+            raise ComputeError('mock runtime handle identity mismatch')
+        return record
+
+    def recover_handle(self, handle):
+        record=self._runtimes.get(handle.get('runtime_name')) or self._tombstones.get(handle.get('runtime_name'))
+        if not record or any(record.get(key)!=handle.get(key) for key in ('runtime_id','request_id','job_id')):
+            raise ComputeError('mock recovery identity mismatch')
+        if record.get('owner_id') not in {None,handle.get('owner_id')}:
+            raise ComputeError('mock recovery owner identity mismatch')
+        record['owner_id']=handle.get('owner_id')
+        return dict(record)
+
+    def bind_owner(self, handle, owner_id):
+        record=self._verify_handle(handle)
+        if record.get('owner_id') not in {None,owner_id}:
+            raise ComputeError('mock runtime owner identity mismatch')
+        record['owner_id']=owner_id
+        return dict(record)
+
     def inspect(self, handle: dict) -> dict:
         self.inspect_calls += 1
+        self._verify_handle(handle)
         name = handle.get("runtime_name")
         if name in self._deleted or name not in self._runtimes:
             return {"ready": False, "deleted": True, "runtime_name": name, "mock": True}
         return {**self._runtimes[name], "ready": True, "deleted": False}
 
     def delete(self, handle: dict) -> bool:
+        self._verify_handle(handle)
         self.delete_calls += 1
         if self.delete_calls <= self.fail_delete_times:
             return False
@@ -151,7 +177,11 @@ class MockColabProvider:
         if name not in self._deleted:
             self._deleted.add(name)
             self.deleted.append(name)
-        self._runtimes.pop(name, None)
+        record=self._runtimes.pop(name, None)
+        if record:
+            self._tombstones[name]=record
+        from .mock_sessions import MockWorkerSessions
+        MockWorkerSessions.close(name)
         return True
 
 
@@ -188,10 +218,22 @@ class MockGPUExecutor:
     def start(self, handle: dict, job: dict, execution_id: str) -> dict:
         self.start_calls += 1
         if execution_id in self._executions:
+            previous=self._executions[execution_id]
+            if previous.get('owner_id')!=job.get('owner_id') or previous.get('runtime')!=handle.get('runtime_name'):
+                raise ComputeError('mock execution owner or runtime mismatch')
+            if previous.get('signature')!=job.get('compatibility_signature'):
+                raise ComputeError('mock execution compatibility signature mismatch')
             return {"execution_id": execution_id, "idempotent": True}
         if self.fail_on_start:
             raise ComputeError("mock executor start failure")
+        from .mock_sessions import MockWorkerSessions
+        session = MockWorkerSessions.start(handle.get('runtime_name'), job.get('owner_id'),
+                                           job.get('compatibility_signature'), execution_id)
         self._executions[execution_id] = {
+            "signature": job.get('compatibility_signature'),
+            "worker_session_id": session['id'],
+            "runtime": handle.get('runtime_name'),
+            "owner_id": job.get('owner_id'),
             "remaining": self.polls_before_complete,
             "failed": False,
             "output": self.output,
@@ -206,9 +248,15 @@ class MockGPUExecutor:
         state = self._executions.get(job.get("execution_id"))
         if state is None:
             raise ComputeError("mock execution is not recoverable")
+        if state.get('owner_id') != job.get('owner_id') or state.get('runtime') != handle.get('runtime_name'):
+            raise ComputeError('mock execution owner or runtime mismatch')
+        from .mock_sessions import MockWorkerSessions
+        MockWorkerSessions.validate_poll(state['runtime'],state['owner_id'],job['execution_id'])
         if self.fail_on_poll:
             state["failed"] = True
         if state["failed"]:
+            from .mock_sessions import MockWorkerSessions
+            MockWorkerSessions.finish(state['runtime'],state['owner_id'],job['execution_id'])
             self._active = max(0, self._active - 1)
             return {
                 "state": "failed",
@@ -219,6 +267,8 @@ class MockGPUExecutor:
         if state["remaining"] > 0:
             state["remaining"] -= 1
             return {"state": "running", "outputs": []}
+        from .mock_sessions import MockWorkerSessions
+        MockWorkerSessions.finish(state['runtime'],state['owner_id'],job['execution_id'])
         self._active = max(0, self._active - 1)
         output = {
             "filename": "mock-output.png",
@@ -264,7 +314,7 @@ def default_provider_factory(
     name = job.get("provider") or (job.get("execution_policy") or {}).get("provider", "mock")
     if name == "mock":
         return MockColabProvider()
-    if name == "colab" and not config.real_enabled:
+    if name == "colab" and (os.getenv("STUDIO_OFFLINE_TEST") == "1" or not config.real_enabled):
         return DisabledProvider("real GPU provider is disabled or unconfigured")
     if name == "colab":
         try:
@@ -284,7 +334,7 @@ def default_executor_factory(
     name = job.get("provider") or (job.get("execution_policy") or {}).get("provider", "mock")
     if name == "mock":
         return MockGPUExecutor()
-    if name == "colab" and config.real_enabled:
+    if name == "colab" and config.real_enabled and os.getenv("STUDIO_OFFLINE_TEST") != "1":
         try:
             from .mcp import MCPGPUExecutor
         except (ImportError, ModuleNotFoundError):

@@ -209,6 +209,64 @@ class Store:
         return path.with_name(path.name + ".dispatch.lock")
 
     @contextmanager
+    def upload_lock(self, identity):
+        """Non-blocking, database-scoped upload coordination; released on crash."""
+        key = hashlib.sha256(identity.encode()).hexdigest()
+        if self.engine.dialect.name == 'postgresql':
+            lock_key = int.from_bytes(bytes.fromhex(key)[:8], 'big', signed=True)
+            with self.engine.connect() as connection:
+                acquired = bool(connection.execute(text('SELECT pg_try_advisory_lock(:key)'), {'key': lock_key}).scalar())
+                try:
+                    yield acquired
+                finally:
+                    if acquired:
+                        connection.execute(text('SELECT pg_advisory_unlock(:key)'), {'key': lock_key})
+            return
+        if self.engine.dialect.name != 'sqlite':
+            raise RuntimeError('unsupported upload lock dialect')
+        path = self._sqlite_dispatch_lock_path()
+        if path is None:
+            with _MEMORY_DISPATCH_LOCKS_GUARD:
+                lock = _MEMORY_DISPATCH_LOCKS.setdefault(f'upload:{id(self.engine)}:{key}', threading.Lock())
+            acquired = lock.acquire(blocking=False)
+            try:
+                yield acquired
+            finally:
+                if acquired:
+                    lock.release()
+            return
+        import fcntl
+
+        path = path.with_name(path.name + '.upload.' + key)
+        with path.open('a+') as handle:
+            try:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                yield False
+                return
+            try:
+                yield True
+            finally:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+    @contextmanager
+    def admission_lock(self, timeout=1.0):
+        """Bounded wait for HTTP admission; scheduler ticks remain non-blocking."""
+        import time
+
+        deadline = time.monotonic() + timeout
+        while True:
+            with self.dispatch_lock() as acquired:
+                if acquired:
+                    yield True
+                    return
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                yield False
+                return
+            time.sleep(min(0.01, remaining))
+
+    @contextmanager
     def dispatch_lock(self):
         """Non-blocking cross-process lock for short scheduler ticks."""
         if self.engine.dialect.name == "postgresql":

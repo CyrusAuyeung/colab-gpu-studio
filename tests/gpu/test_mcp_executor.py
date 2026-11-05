@@ -172,3 +172,14 @@ def test_repeated_start_script_is_marker_idempotent_not_restart():
     assert first["execution_id"] == second["execution_id"]
     assert all("O_EXCL" in script and "Popen" in script for script in scripts)
     assert all("if _marker.exists()" in script for script in scripts)
+
+
+@pytest.mark.parametrize('message,transient', [('temporarily unavailable',True),('deadline exceeded',True),('permission denied',False),('invalid params',False)])
+def test_rpc_error_classification_is_safe(message,transient):
+    from app.gpu.mcp import MCPTransient
+    executor=MCPGPUExecutor(object(),'owner-1',google=Google(),client=httpx.Client(
+        transport=httpx.MockTransport(lambda _:httpx.Response(200,json={'error':{'code':-32000,'message':message+' fake-secret'}}))))
+    with pytest.raises(MCPError) as caught:
+        executor._rpc('tools/call',{})
+    assert isinstance(caught.value,MCPTransient)==transient
+    assert 'fake-secret' not in str(caught.value)

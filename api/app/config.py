@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -17,4 +18,9 @@ class Settings(BaseSettings):
     studio_api_token: str = ""
 
 
-settings = Settings()
+if os.getenv("STUDIO_OFFLINE_TEST") == "1":
+    from .offline import install
+    install()
+    settings = Settings(_env_file=None)
+else:
+    settings = Settings(_env_file=None) if os.getenv("ENVIRONMENT") == "offline-test" else Settings()

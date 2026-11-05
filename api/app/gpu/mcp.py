@@ -121,6 +121,7 @@ else:
                                   stdin=_subprocess.DEVNULL, stdout=_log_handle, stderr=_subprocess.STDOUT,
                                   shell=False, start_new_session=True)
         _log_handle.close()
+        _marker.write_text(_json.dumps({{"execution_id": _execution_id, "state": "launched", "pid": _proc.pid}}, sort_keys=True), encoding="utf-8")
         _result.update({{"started": True, "pid": _proc.pid}})
 print(_json.dumps(_result, separators=(",", ":")))
 """
@@ -149,8 +150,13 @@ else:
         _result.update({{key: _status.get(key) for key in ("state", "error_code", "error_message", "stage", "timings", "stage_started") if key in _status}})
     if _result.get("state") == "completed" and _meta_path.exists():
         _meta = _json.loads(_meta_path.read_text(encoding="utf-8"))
+        _artifacts = _meta.get("artifacts") if isinstance(_meta, dict) else None
+        if isinstance(_artifacts, list):
+            if len(_artifacts) > 100 or len(_json.dumps(_artifacts)) > 1048576:
+                raise ValueError("artifact metadata exceeds limit")
+            _result["artifacts"] = _artifacts
         _total = 0
-        for _item in (_meta.get("outputs", []) if isinstance(_meta, dict) else []):
+        for _item in (_meta.get("outputs", []) if isinstance(_meta, dict) and _artifacts is None else []):
             if not isinstance(_item, dict):
                 continue
             _relative = _item.get("path")
@@ -166,7 +172,50 @@ else:
             _content = _file.read_bytes()
             _total += len(_content)
             _result.setdefault("outputs", []).append({{**_item, "content": _base64.b64encode(_content).decode("ascii"), "content_encoding": "base64"}})
+# A terminal status wins. For older markers without PID retain timeout recovery.
+if _result.get('state') in ('running', 'starting', 'reserved'):
+    _marker_path = _dir / 'marker.json'
+    if _marker_path.is_file():
+        _marker_data = _json.loads(_marker_path.read_text())
+        _pid = _marker_data.get('pid')
+        if type(_pid) is int and _pid > 0:
+            import os as _os
+            try:
+                _os.kill(_pid, 0)
+                _proc_stat = _Path('/proc') / str(_pid) / 'stat'
+                _dead = _proc_stat.is_file() and _proc_stat.read_text().rsplit(')', 1)[1].split()[0] == 'Z'
+            except ProcessLookupError:
+                _dead = True
+            except PermissionError:
+                _dead = False
+            if _dead:
+                _result.update({{'state':'failed', 'error_code':'gpu_worker_exited',
+                    'error_message':'Worker process exited before completion'}})
 print(_json.dumps(_result, separators=(",", ":")))
+"""
+
+
+def build_chunk_code(execution_id: str, index: int, offset: int) -> str:
+    execution_id = _uuid4(execution_id)
+    if type(index) is not int or not 0 <= index < 100 or type(offset) is not int or not 0 <= offset <= 2*1024**3:
+        raise MCPError('invalid chunk request')
+    return f"""# Trusted bounded artifact reader; no caller paths.
+import base64 as _b
+import json as _j
+from pathlib import Path as _P
+_e = {execution_id!r}
+_root = _P('/content/ai-studio') / _e
+_meta = _j.loads((_root / 'meta.json').read_text())
+if _meta.get('execution_id') != _e:
+    raise ValueError('execution mismatch')
+_item = _meta['artifacts'][{index}]
+_path = (_root / _item['path']).resolve()
+if _root.resolve() not in _path.parents or not _path.is_file():
+    raise ValueError('artifact path escaped')
+with _path.open('rb') as _f:
+    _f.seek({offset})
+    _chunk = _f.read(1024*1024)
+print(_j.dumps({{'execution_id': _e, 'offset': {offset}, 'content': _b.b64encode(_chunk).decode()}}))
 """
 
 
@@ -192,9 +241,11 @@ class MCPGPUExecutor:
         client: httpx.Client | None = None,
         endpoint: str = MCP_ENDPOINT,
         timeout: float = 30.0,
+        artifact_store=None,
     ):
         if store is None or not owner_id:
             raise MCPError("MCPGPUExecutor需要Repository和owner_id")
+        self.artifact_store = artifact_store
         self.store = store
         self.owner_id = owner_id
         self.client = client or httpx.Client(timeout=httpx.Timeout(timeout), follow_redirects=False)
@@ -231,16 +282,27 @@ class MCPGPUExecutor:
                 break
             except httpx.TransportError as exc:
                 if attempt == _NETWORK_ATTEMPTS - 1:
-                    raise MCPError(f"Colab MCP网络请求失败（{type(exc).__name__}，已重试{attempt}次）") from exc
+                    raise MCPTransient(f"Colab MCP网络请求失败（{type(exc).__name__}，已重试{attempt}次）") from exc
                 time.sleep(2 * (attempt + 1))
             except httpx.HTTPError as exc:
                 raise MCPError(f"Colab MCP网络请求失败（{type(exc).__name__}）") from exc
+        if response.status_code in {408, 429, 500, 502, 503, 504}:
+            raise MCPTransient(f'Colab MCP temporarily unavailable (HTTP {response.status_code})')
         if response.status_code < 200 or response.status_code >= 300:
             raise MCPError(f"Colab MCP请求失败（HTTP {response.status_code}）")
         envelope = self._parse_response(response)
         if not isinstance(envelope, dict):
             raise MCPError("Colab MCP响应格式无效")
         if envelope.get("error"):
+            error = envelope['error']
+            message = error.get('message', '') if isinstance(error, dict) else ''
+            code = error.get('code') if isinstance(error, dict) else None
+            # Protocol/authorization failures are permanent, even if text happens
+            # to contain a transient phrase. Never echo upstream messages.
+            if code not in (-32700, -32600, -32601, -32602, 401, 403) and isinstance(message, str):
+                permanent = re.search(r'permission|unauthori|forbidden|invalid|denied', message, re.I)
+                if not permanent and _TRANSIENT.search(message):
+                    raise MCPTransient('Colab MCP temporary RPC failure')
             raise MCPError("Colab MCP工具调用失败")
         return envelope.get("result")
 
@@ -354,6 +416,8 @@ class MCPGPUExecutor:
         # crossing into the remote runtime.
         payload = {
             "execution_id": execution_id,
+            "owner_id": job.get("owner_id"),
+            "output_transport": "mcp-chunks-v1",
             "job_id": job.get("id"),
             "execution_dir": root,
             "max_runtime_minutes": job.get("max_runtime_minutes", 10),
@@ -414,6 +478,39 @@ class MCPGPUExecutor:
             }
         if state != "completed":
             raise MCPError("Colab状态值无效")
+        if 'artifacts' in result:
+            artifacts=result['artifacts']
+            if (not isinstance(artifacts,list) or not 1 <= len(artifacts) <= 100
+                    or result.get('execution_id')!=execution_id
+                    or len(json.dumps(artifacts))>1048576):
+                raise MCPError('invalid artifact manifest')
+            if any('storage' not in item for item in artifacts):
+                from app.config import settings
+
+                from .artifacts import LocalArtifactStore
+                objects = self.artifact_store or LocalArtifactStore(settings.data_dir / 'assets' / 'artifacts')
+                local = []
+                for index, item in enumerate(artifacts):
+                    value = objects.begin(self.owner_id, execution_id, item['filename'], item['mime'],
+                        item['size_bytes'], item['sha256'])
+                    key = value['artifact_id']
+                    offset = objects.offset(key, self.owner_id, execution_id)
+                    while offset < item['size_bytes']:
+                        reply = self._tool('execute_code', {'session': session, 'executionId': str(uuid.uuid4()),
+                            'code': build_chunk_code(execution_id, index, offset)})
+                        if not isinstance(reply, dict) or reply.get('execution_id') != execution_id or reply.get('offset') != offset:
+                            raise MCPError('artifact chunk identity mismatch')
+                        try:
+                            chunk = base64.b64decode(reply['content'], validate=True)
+                        except (KeyError, ValueError, TypeError) as exc:
+                            raise MCPError('artifact chunk encoding invalid') from exc
+                        if not chunk or len(chunk) > 1024**2:
+                            raise MCPError('artifact chunk size invalid')
+                        offset = objects.append(key, self.owner_id, execution_id, offset, chunk)
+                    local.append(objects.verify(key, self.owner_id, execution_id))
+                artifacts = local
+            return {'state':'completed','execution_id':execution_id,'artifacts':artifacts,
+                    'timings':result.get('timings') or {}}
         outputs = []
         total = 0
         for item in result.get("outputs", []):

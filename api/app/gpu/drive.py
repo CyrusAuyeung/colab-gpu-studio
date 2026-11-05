@@ -9,15 +9,22 @@ import posixpath
 import re
 import time
 import uuid
+from pathlib import Path
 from urllib.parse import urlsplit
 
 import httpx
+
+from app.security import decrypt_secret, encrypt_secret
 
 from .google import GoogleError, GoogleService
 
 
 class DriveError(GoogleError):
     pass
+
+
+class _DriveSessionExpired(DriveError):
+    """Only explicit 404/410 permits replacement after remote reconciliation."""
 
 
 class _DriveTransportError(DriveError):
@@ -524,6 +531,141 @@ class DriveStorage:
                 continue
             raise DriveError(f"Drive可恢复上传失败（HTTP {response.status_code}）")
         raise DriveError("Drive可恢复上传未完成")
+
+    def put_file(self, key: str, source: Path, mime: str) -> dict:
+        """Upload a file in bounded chunks; persist encrypted resumable capability."""
+        normalized = self._normalize_key(key)
+        database = getattr(self.store, 'store', self.store)
+        identity = f'{self.owner_id}:{normalized}'
+        with database.upload_lock(identity) as acquired:
+            if not acquired:
+                raise DriveError('Drive file upload busy; retry same key')
+            return self._put_file_locked(normalized, source, mime)
+
+    def _put_file_locked(self, key, source, mime):
+        normalized = self._normalize_key(key)
+        source = Path(source)
+        if source.is_symlink() or not source.is_file() or not isinstance(mime, str) or not mime:
+            raise DriveError("Drive source file invalid")
+        size = source.stat().st_size
+        if not 0 < size <= 2 * 1024**3:
+            raise DriveError("Drive source size invalid")
+        checksum = hashlib.sha256()
+        with source.open('rb') as stream:
+            while part := stream.read(8 * 1024**2):
+                checksum.update(part)
+        sha256 = checksum.hexdigest()
+        key_hash = hashlib.sha256(normalized.encode()).hexdigest()
+        local = self._local_match(self._repo_files(), key_hash, sha256)
+        if local:
+            remote_id = local.get('remote_id') or local.get('remote_file_id')
+            if self._media_download(remote_id, size) != (size, sha256):
+                raise DriveError("Drive existing file verification failed")
+            return dict(id=remote_id, name=source.name, size=size, mime=mime, sha256=sha256, verified=True)
+        parent = self._job_parent(normalized)
+        session_id = hashlib.sha256(f'upload:{self.owner_id}:{key_hash}:{sha256}'.encode()).hexdigest()
+        saved = self.store.get('files', session_id, self.owner_id)
+        result = None
+        if saved and saved.get('state') == 'verified':
+            result = {'id': saved.get('remote_id'), 'size': str(size)}
+        elif saved:
+            location = decrypt_secret(saved['encrypted_session'])
+            if not self._controlled_upload_location(location):
+                raise DriveError("Drive stored session location invalid")
+            try:
+                offset, result = self._file_resume_status(location, size, mime)
+            except _DriveSessionExpired:
+                saved = None
+        if not saved and result is None:
+            existing = self._find_existing_file(posixpath.basename(normalized), parent, key_hash, sha256)
+            if existing:
+                result = existing
+            else:
+                response = self._request('POST', self.upload_url + '/files',
+                    params={'uploadType': 'resumable', 'fields': 'id,name,size,mimeType,appProperties'},
+                    json_body={'name': posixpath.basename(normalized), 'parents': [parent], 'mimeType': mime,
+                        'appProperties': {'studio_key_hash': key_hash, 'studio_sha256': sha256}},
+                    headers={'X-Upload-Content-Type': mime, 'X-Upload-Content-Length': str(size)})
+                location = response.headers.get('location', '')
+                if response.status_code not in (200, 201) or not self._controlled_upload_location(location):
+                    raise DriveError("Drive file upload session initialization failed")
+                session_data = {'kind': 'drive_upload_session', 'state': 'uploading',
+                    'encrypted_session': encrypt_secret(location),
+                    'size': size, 'sha256': sha256, 'key_hash': key_hash}
+                if self.store.get('files', session_id, self.owner_id):
+                    self.store.update('files', session_id, session_data, self.owner_id)
+                else:
+                    self.store.create('files', self.owner_id, session_data, record_id=session_id)
+                offset = 0
+        if result is None:
+            stalled = 0
+            with source.open('rb') as stream:
+                while offset < size:
+                    stream.seek(offset)
+                    chunk = stream.read(min(8 * 1024**2, size - offset))
+                    if not chunk:
+                        raise DriveError("Drive source changed while uploading")
+                    end = offset + len(chunk) - 1
+                    previous = offset
+                    try:
+                        response = self._request('PUT', location, content=chunk, retryable=False,
+                            headers={'Content-Type': mime, 'Content-Range': f'bytes {offset}-{end}/{size}'})
+                    except _DriveTransportError:
+                        offset, result = self._file_resume_status(location, size, mime)
+                    else:
+                        if response.status_code in (200, 201):
+                            result = self._json(response)
+                            offset = size
+                        elif response.status_code == 308:
+                            acknowledged = self._range_end(response)
+                            offset = acknowledged + 1 if acknowledged is not None else 0
+                            if not previous <= offset <= end + 1:
+                                raise DriveError("Drive file acknowledgment invalid")
+                        elif response.status_code in _RETRYABLE_STATUSES:
+                            offset, result = self._file_resume_status(location, size, mime)
+                        else:
+                            raise DriveError("Drive file chunk rejected")
+                    if result is not None:
+                        break
+                    stalled = stalled + 1 if offset <= previous else 0
+                    if stalled >= self.max_retries:
+                        raise DriveError("Drive file upload made no progress")
+            if result is None:
+                _, result = self._file_resume_status(location, size, mime)
+        try:
+            reported_size = result.get('size') if isinstance(result, dict) else None
+            if isinstance(reported_size, bool) or not isinstance(reported_size, (int, str)):
+                raise ValueError('invalid size type')
+            valid_size = int(reported_size) == size
+        except (TypeError, ValueError, OverflowError):
+            valid_size = False
+        if not result or not isinstance(result.get('id'), str) or not result['id'] or not valid_size:
+            raise DriveError("Drive file upload completion invalid")
+        if self._media_download(result['id'], size) != (size, sha256):
+            raise DriveError("Drive file upload checksum invalid")
+        self._save_file_record(normalized, key_hash, sha256, mime, result, size)
+        if self.store.get('files', session_id, self.owner_id):
+            # Replace session capability with a terminal identity; never publish the URL.
+            self.store.update('files', session_id, {'state': 'verified', 'encrypted_session': '',
+                'remote_id': result['id']}, self.owner_id)
+        return dict(id=result['id'], name=source.name, size=size, mime=mime, sha256=sha256, verified=True)
+
+    def _file_resume_status(self, location, size, mime):
+        response = self._request('PUT', location, content=b'', retryable=False,
+            headers={'Content-Type': mime, 'Content-Length': '0', 'Content-Range': f'bytes */{size}'})
+        if response.status_code in (200, 201):
+            return size, self._json(response)
+        if response.status_code in (404, 410):
+            raise _DriveSessionExpired('Drive file session expired')
+        if response.status_code != 308:
+            raise DriveError("Drive file session recovery failed")
+        acknowledged = self._range_end(response)
+        if response.headers.get('Range') and acknowledged is None:
+            raise DriveError("Drive file session range invalid")
+        offset = acknowledged + 1 if acknowledged is not None else 0
+        if not 0 <= offset <= size:
+            raise DriveError("Drive file session offset invalid")
+        return offset, None
 
     def put(self, key: str, content: bytes, mime: str) -> dict:
         normalized = self._normalize_key(key)

@@ -131,3 +131,9 @@ export interface GoogleClientConfig { configured: boolean; client_id?: string; r
 export const getGoogleClientConfig = () => apiFetch<GoogleClientConfig>('/api/gpu/auth/google/config');
 export const saveGoogleClientConfig = (body: {client_id?: string; client_secret?: string; client_json?: Record<string, unknown>; confirmed: true}) => apiFetch<GoogleClientConfig>('/api/gpu/auth/google/config', post(body));
 export const getReferenceAssets = (projectId: string) => apiFetch<GalleryAsset[]>(`/api/assets?project_id=${encodeURIComponent(projectId)}`);
+
+export function createGpuBatch(jobs: GpuJobRequest[], mode: 'save'|'smart'|'batch', idleSeconds: number, idempotencyKey: string) {
+  return apiFetch<{id:string}>('/api/gpu/batches', {method:'POST',headers:{'Idempotency-Key':idempotencyKey},body:JSON.stringify({jobs,mode,idle_seconds:idleSeconds})});
+}
+
+export const retryGpuAttempt = (id: string, key: string) => apiFetch<GpuJob>(`/api/gpu/jobs/${encodeURIComponent(id)}/attempts`, { method: "POST", headers: { "Idempotency-Key": key }, body: JSON.stringify({}) });

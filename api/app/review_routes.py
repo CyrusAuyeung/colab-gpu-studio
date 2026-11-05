@@ -27,7 +27,7 @@ from .gpu.prep import create_prep_job, prep_idempotency_key
 from .gpu.rates import estimate as estimate_units
 from .gpu.rates import mode_param
 from .gpu.repository import Repository
-from .gpu.runtime_worker import _reviewed_custom_nodes, _validate_weights
+from .gpu.runtime_worker import REVIEWED_CUSTOM_NODES, _reviewed_custom_nodes, _validate_weights
 from .gpu.scheduler import Scheduler
 from .storage import read_asset
 
@@ -47,6 +47,13 @@ _DANGEROUS = {
     "httprequest",
     "download",
     "websocket",
+}
+# A custom node class is admissible only with its exact reviewed repository pin.
+_REQUIRED_CUSTOM_NODE_PINS = {
+    "ConditioningKrea2Rebalance": (
+        "https://github.com/huwhitememes/comfyui-krea2-conditioning",
+        "729cda4fade982988a375b01928f515458407a5c",
+    ),
 }
 
 
@@ -140,7 +147,7 @@ def _review_manifest(row: dict) -> tuple[dict, list[str], str, list[dict]]:
         raise APIError("REVIEW_INVALID", "manifest.dependencies缺失")
     commit = _fixed_commit(dependencies.get("comfyui_commit"), "dependencies.comfyui_commit")
     try:
-        _reviewed_custom_nodes(dependencies.get("custom_nodes"))
+        custom_nodes = _reviewed_custom_nodes(dependencies.get("custom_nodes"))
     except Exception as exc:
         raise APIError("REVIEW_INVALID", "custom_nodes 只允许已审核并锁定提交的仓库") from exc
     weights = dependencies.get("weight_files")
@@ -164,6 +171,11 @@ def _review_manifest(row: dict) -> tuple[dict, list[str], str, list[dict]]:
         classes.add(class_type)
     if not classes:
         raise APIError("WORKFLOW_INVALID", "api_graph不能为空")
+    pinned_nodes = {(item["repo"], item["commit"]): item["dir"] for item in custom_nodes}
+    for class_type, pin in _REQUIRED_CUSTOM_NODE_PINS.items():
+        reviewed_dir = REVIEWED_CUSTOM_NODES.get(pin)
+        if class_type in classes and pinned_nodes.get(pin) != reviewed_dir:
+            raise APIError("REVIEW_INVALID", f"节点 {class_type} 必须绑定匹配的已审查custom node pin")
     return manifest, sorted(classes), commit, checked
 
 
