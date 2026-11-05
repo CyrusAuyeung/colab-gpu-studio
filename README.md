@@ -9,7 +9,7 @@
 ## 下载与在线演示
 
 - **完整版下载**：[0.1.31-dev.8 多平台发布](https://github.com/TizenryA/colab-gpu-studio/releases/tag/v0.1.31-dev.8)。各平台安装方式与验证范围见 Release 附件说明。
-- **只读界面演示**：[打开 Cloudflare Workers 演示站](https://colab-gpu-studio-demo.xingchenciyuan.workers.dev)。公开演示密码：`demo-readonly`。
+- **只读界面演示**：[打开 Cloudflare Workers 演示站](https://gpu-colab-studio-demo.tizenry.tech)。公开演示密码：`demo-readonly`。
 - 演示站使用 **0.1.31-dev.8 原版前端**，展示独立的 Mock 数据快照，不连接生产站、Google 或真实 GPU，不消耗 CU。生成、上传、修改、删除和授权均不可用；完整功能请下载后自行部署。
 - [演示说明与更多截图](docs/DEMO.md)。以下截图来自线上演示站的实际浏览器，不是设计稿。
 

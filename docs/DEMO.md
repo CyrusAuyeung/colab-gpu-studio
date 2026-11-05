@@ -2,7 +2,7 @@
 
 ## 打开演示
 
-- 地址：https://colab-gpu-studio-demo.xingchenciyuan.workers.dev
+- 地址：https://gpu-colab-studio-demo.tizenry.tech
 - 公开演示密码：`demo-readonly`（不是生产密码）
 - 程序版本：**0.1.31-dev.8**
 - 构建来源：`f706918b30245ed70a6054ef7eb5a658eb0fb6b8`。相对 Release tag `v0.1.31-dev.8` 的应用代码没有变化，main 只多文档。
