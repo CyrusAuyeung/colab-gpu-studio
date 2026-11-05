@@ -149,6 +149,111 @@
         "max": 0.8,
         "step": 0.01,
         "advanced": true
+      },
+      "lora_krea_melancholy": {
+        "type": "number",
+        "label": "Krea 艺术影调 (Melancholy)",
+        "description": "忧郁艺术影调质感，0 表示关闭",
+        "binding": {
+          "node": "101",
+          "input": "strength_model"
+        },
+        "default": 0.6,
+        "min": 0.0,
+        "max": 2.0,
+        "step": 0.05,
+        "advanced": true,
+        "group": "LoRA 强度调节"
+      },
+      "lora_krea_tjfilm": {
+        "type": "number",
+        "label": "Krea 电影胶片 V2 (TJFilm)",
+        "description": "Krea 专属电影胶片感，0 表示关闭",
+        "binding": {
+          "node": "102",
+          "input": "strength_model"
+        },
+        "default": 0.75,
+        "min": 0.0,
+        "max": 2.0,
+        "step": 0.05,
+        "advanced": true,
+        "group": "LoRA 强度调节"
+      },
+      "lora_krea_realism": {
+        "type": "number",
+        "label": "Krea 写实引擎 (Realism v3.1)",
+        "description": "皮肤与微材质真实感，0 表示关闭",
+        "binding": {
+          "node": "103",
+          "input": "strength_model"
+        },
+        "default": 0.5,
+        "min": 0.0,
+        "max": 2.0,
+        "step": 0.05,
+        "advanced": true,
+        "group": "LoRA 强度调节"
+      },
+      "lora_krea_softlight": {
+        "type": "number",
+        "label": "Krea 影视柔光 (Cc-MJ)",
+        "description": "MJ 风格高光柔和扩散，0 表示关闭",
+        "binding": {
+          "node": "104",
+          "input": "strength_model"
+        },
+        "default": 0.55,
+        "min": 0.0,
+        "max": 2.0,
+        "step": 0.05,
+        "advanced": true,
+        "group": "LoRA 强度调节"
+      },
+      "lora_krea_filter": {
+        "type": "number",
+        "label": "Krea 风格滤镜 (Cc-MJ)",
+        "description": "MJ 特色调色电影滤镜，0 表示关闭",
+        "binding": {
+          "node": "105",
+          "input": "strength_model"
+        },
+        "default": 0.6,
+        "min": 0.0,
+        "max": 2.0,
+        "step": 0.05,
+        "advanced": true,
+        "group": "LoRA 强度调节"
+      },
+      "lora_moss_feverdream": {
+        "type": "number",
+        "label": "MOSS 梦境胶片 (Feverdream)",
+        "description": "超现实与梦幻光影微调，0 表示关闭",
+        "binding": {
+          "node": "106",
+          "input": "strength_model"
+        },
+        "default": 0.52,
+        "min": 0.0,
+        "max": 2.0,
+        "step": 0.05,
+        "advanced": true,
+        "group": "LoRA 强度调节"
+      },
+      "lora_moss_tjfilm": {
+        "type": "number",
+        "label": "MOSS 电影胶片 V1 (TJFilm)",
+        "description": "MOSS 构图阶段电影胶片质感，0 表示关闭",
+        "binding": {
+          "node": "107",
+          "input": "strength_model"
+        },
+        "default": 0.7,
+        "min": 0.0,
+        "max": 2.0,
+        "step": 0.05,
+        "advanced": true,
+        "group": "LoRA 强度调节"
       }
     },
     "dependencies": {
