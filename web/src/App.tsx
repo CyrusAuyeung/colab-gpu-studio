@@ -4,7 +4,7 @@ import { TasksPanel } from './pages/JobsPage';
 import { CreatePanel } from './pages/CreatePage';
 import { ComputePage, ThemePicker } from './pages/ComputePage';
 import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
-import { Sparkles, Zap, Image as ImageIcon, Cpu, Settings as SettingsIcon, Folder, ChevronDown, X, Maximize2, Star, Download, Trash2, RotateCcw, Triangle } from 'lucide-react';
+import { Sparkles, Zap, Image as ImageIcon, Cpu, Settings as SettingsIcon, Folder, ChevronDown, X, Plus, Check, Maximize2, Star, Download, Trash2, RotateCcw, Triangle } from 'lucide-react';
 import {
   apiMessage, assetUrl, cancelGpuJob, createGpuJob, createGpuBatch, createProject, deleteAsset, disconnectGoogle,
   getGpuComputeSpecs, getGpuGallery, getGpuJob, getGpuJobs, getGpuModels,
@@ -134,34 +134,75 @@ function Login({ onLoggedIn }: { onLoggedIn: () => void }) {
   );
 }
 
+const PROJECT_KEY = 'colab-gpu-studio-project';
+function savedProjectId(): string { try { return localStorage.getItem(PROJECT_KEY) || ''; } catch { return ''; } }
+function saveProjectId(id: string) { try { if (id) localStorage.setItem(PROJECT_KEY, id); } catch { /* storage can be unavailable */ } }
+
 function ProjectSheet({
   open,
   projects,
   projectId,
   onClose,
   onSelect,
-  onCreate,
 }: {
   open: boolean;
   projects: Project[];
   projectId: string;
   onClose: () => void;
   onSelect: (id: string) => void;
-  onCreate: (title: string) => Promise<void>;
+}) {
+  if (!open) return null;
+  return (
+    <div className={styles.dialogBackdrop} role="presentation" onClick={onClose}>
+      <section className={styles.dialog} role="dialog" aria-modal="true" aria-label="切换项目" onClick={(e) => e.stopPropagation()}>
+        <div className={styles.cardHead}>
+          <h2>切换项目</h2>
+          <button className={styles.iconGhost} type="button" aria-label="关闭" onClick={onClose}><X size={18} strokeWidth={1.6} aria-hidden /></button>
+        </div>
+        {projects.length === 0 && <p className="muted">还没有项目，点右上角的 ＋ 新建一个。</p>}
+        <ul className="projectList">
+          {projects.map((p) => (
+            <li key={p.id}>
+              <button
+                type="button"
+                className="projectRow"
+                aria-current={p.id === projectId ? 'true' : undefined}
+                onClick={() => { onSelect(p.id); onClose(); }}
+              >
+                <span>{p.title}</span>
+                {p.id === projectId && <Check size={16} strokeWidth={1.8} aria-label="当前项目" />}
+              </button>
+            </li>
+          ))}
+        </ul>
+      </section>
+    </div>
+  );
+}
+
+function NewProjectDialog({
+  open,
+  onClose,
+  onCreate,
+}: {
+  open: boolean;
+  onClose: () => void;
+  onCreate: (title: string) => Promise<boolean>;
 }) {
   const [title, setTitle] = useState('');
   const [creating, setCreating] = useState(false);
-
   if (!open) return null;
 
   async function handleCreate(e: FormEvent) {
     e.preventDefault();
-    if (!title.trim()) return;
+    const name = title.trim();
+    if (!name || creating) return;
     setCreating(true);
     try {
-      await onCreate(title.trim());
-      setTitle('');
-      onClose();
+      if (await onCreate(name)) {
+        setTitle('');
+        onClose();
+      }
     } finally {
       setCreating(false);
     }
@@ -169,50 +210,23 @@ function ProjectSheet({
 
   return (
     <div className={styles.dialogBackdrop} role="presentation" onClick={onClose}>
-      <section
-        className={styles.dialog}
-        role="dialog"
-        aria-modal="true"
-        aria-label="项目管理"
-        onClick={(e) => e.stopPropagation()}
-      >
+      <form className={styles.dialog} role="dialog" aria-modal="true" aria-label="新建项目" onClick={(e) => e.stopPropagation()} onSubmit={handleCreate}>
         <div className={styles.cardHead}>
-          <h2>项目</h2>
+          <h2>新建项目</h2>
           <button className={styles.iconGhost} type="button" aria-label="关闭" onClick={onClose}><X size={18} strokeWidth={1.6} aria-hidden /></button>
         </div>
         <div className="field">
-          <label htmlFor="project-select">当前项目</label>
-          <select
-            id="project-select"
-            value={projectId}
-            onChange={(e) => {
-              onSelect(e.target.value);
-              onClose();
-            }}
-          >
-            <option value="">未选择项目</option>
-            {projects.map((p) => (
-              <option key={p.id} value={p.id}>{p.title}</option>
-            ))}
-          </select>
+          <label htmlFor="project-new">项目名称</label>
+          <input id="project-new" autoFocus maxLength={80} placeholder="例如：符玄和青雀" value={title} onChange={(e) => setTitle(e.target.value)} />
         </div>
-        <form className="field" onSubmit={handleCreate}>
-          <label htmlFor="project-new">新建项目</label>
-          <div className={styles.inlineForm}>
-            <input id="project-new" placeholder="项目名称" value={title} onChange={(e) => setTitle(e.target.value)} />
-            <button className="button" disabled={creating || !title.trim()} type="submit">
-              {creating ? '创建中…' : '创建'}
-            </button>
-          </div>
-        </form>
-      </section>
+        <div className={styles.inlineForm}>
+          <button className="button secondary" type="button" onClick={onClose}>取消</button>
+          <button className="button" disabled={creating || !title.trim()} type="submit">{creating ? '创建中…' : '创建'}</button>
+        </div>
+      </form>
     </div>
   );
 }
-
-
-
-
 
 export default function App() {
   const [loggedIn, setLoggedIn] = useState(isLoggedIn());
@@ -220,6 +234,7 @@ export default function App() {
   const [projects, setProjects] = useState<Project[]>([]);
   const [projectId, setProjectId] = useState('');
   const [showProjectSheet, setShowProjectSheet] = useState(false);
+  const [showNewProject, setShowNewProject] = useState(false);
   const currentProjectId = useRef(projectId);
   currentProjectId.current = projectId;
 
@@ -286,7 +301,13 @@ export default function App() {
       const [projR, modR, wfR, preR, setR, useR] = results;
       if (projR.status === 'fulfilled') {
         setProjects(projR.value);
-        setProjectId((curr) => curr || projR.value[0]?.id || '');
+        // Restore the last chosen project when it still exists; otherwise fall back to the first one.
+        const list = projR.value;
+        setProjectId((curr) => {
+          if (curr && list.some((p) => p.id === curr)) return curr;
+          const saved = savedProjectId();
+          return (saved && list.some((p) => p.id === saved) ? saved : list[0]?.id) || '';
+        });
       } else setError(apiMessage(projR.reason));
       if (modR.status === 'fulfilled') setModels(modR.value);
       if (wfR.status === 'fulfilled') {
@@ -406,13 +427,20 @@ export default function App() {
     }
   }, [againJob, workflows]);
 
-  async function createLocalProject(title: string) {
+  function chooseProject(id: string) {
+    setProjectId(id);
+    saveProjectId(id);
+  }
+
+  async function createLocalProject(title: string): Promise<boolean> {
     try {
       const created = await createProject(title);
       setProjects((curr) => [created, ...curr]);
-      setProjectId(created.id);
+      chooseProject(created.id);
+      return true;
     } catch (cause) {
       setError(apiMessage(cause));
+      return false;
     }
   }
 
@@ -607,12 +635,13 @@ export default function App() {
         if (viewer) setViewer(null);
         else if (detail) setDetail(null);
         else if (confirm) setConfirm(null);
+        else if (showNewProject) setShowNewProject(false);
         else if (showProjectSheet) setShowProjectSheet(false);
       }
     }
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [viewer, detail, confirm, showProjectSheet]);
+  }, [viewer, detail, confirm, showProjectSheet, showNewProject]);
 
   if (!loggedIn) {
     return <Login onLoggedIn={() => { setLoggedIn(true); setLoginRefresh((c) => c + 1); }} />;
@@ -633,6 +662,9 @@ export default function App() {
             <Folder size={15} strokeWidth={1.6} aria-hidden />
             <span>{activeProject ? activeProject.title : '选择项目'}</span>
             <ChevronDown size={14} strokeWidth={1.6} aria-hidden />
+          </button>
+          <button className="iconButton" type="button" aria-label="新建项目" title="新建项目" onClick={() => setShowNewProject(true)}>
+            <Plus size={18} strokeWidth={1.6} aria-hidden />
           </button>
           <button className="iconButton" aria-label="打开设置" onClick={() => setTab('设置')}>
             <SettingsIcon size={18} strokeWidth={1.6} aria-hidden />
@@ -659,9 +691,9 @@ export default function App() {
         projects={projects}
         projectId={projectId}
         onClose={() => setShowProjectSheet(false)}
-        onSelect={setProjectId}
-        onCreate={createLocalProject}
+        onSelect={chooseProject}
       />
+      <NewProjectDialog open={showNewProject} onClose={() => setShowNewProject(false)} onCreate={createLocalProject} />
 
       {/* 主工作区 */}
       <main className={styles.page}>

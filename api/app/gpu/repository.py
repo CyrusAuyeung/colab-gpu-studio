@@ -125,6 +125,13 @@ def ensure_schema(store: Store) -> None:
             time.sleep(0.03 * (attempt + 1))
 
 
+def retarget_handle(handle, job_id):
+    """Return the runtime handle re-owned by job_id (providers check handle ownership against the lease owner)."""
+    if not isinstance(handle, dict):
+        return handle
+    return {**handle, 'job_id': job_id, 'owner_job_id': job_id}
+
+
 class Repository:
     def __init__(self, store: Store):
         self.store = store
@@ -440,7 +447,8 @@ class Repository:
                 return False
             lease.state='active'
             lease.data={**lease.data,'state':'active','owner_job_id':job_id,'current_job_id':job_id,
-                        'last_active_at':now,'idle_deadline_at':None}
+                        'last_active_at':now,'idle_deadline_at':None,
+                        **({'handle':retarget_handle(lease.data['handle'],job_id)} if isinstance(lease.data.get('handle'),dict) else {})}
             job.data={**job.data,'lease_id':lease_id,'deadline_epoch':lease.data['deadline_epoch']}
             for row in (lease,job):
                 row.version+=1
@@ -474,12 +482,10 @@ class Repository:
             following.data={**following.data,'lease_id':lease_id,
                             'deadline_epoch':lease.data['deadline_epoch']}
             handle=lease.data.get('handle')
-            if isinstance(handle,dict) and lease.data.get('provider')=='colab':
-                # Real providers verify handle ownership against the lease owner; keep them in step.
-                handle={**handle,'job_id':next_job_id,'owner_job_id':next_job_id}
+            # Handle ownership must follow the lease owner for every provider (real ones verify it).
             lease.data={**lease.data,'owner_job_id':next_job_id,'current_job_id':next_job_id,
                         'last_active_at':now,'state':'active',
-                        **({'handle':handle} if isinstance(handle,dict) else {})}
+                        **({'handle':retarget_handle(handle,next_job_id)} if isinstance(handle,dict) else {})}
             lease.state='active'
             execution=session.get(GpuExecutionRow,job.data.get('execution_id'))
             if execution is not None:
