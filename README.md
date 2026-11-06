@@ -90,6 +90,10 @@ uv run --env-file .env python -m app.worker watchdog
 1. **绑定 Google OAuth**：按 [Google OAuth 与 Drive 配置](docs/OAUTH_SETUP.md) 在网页设置里导入你的 Google Cloud Web 客户端 JSON，分别点击连接 Colab 和 Drive。
 2. **启用内置工作流或导入新工作流**：参考 [内置工作流说明](docs/BUILTIN_WORKFLOWS.md) 和 [模型与工作流审查流程](docs/WORKFLOW_REVIEW.md)，开启 `GPU_REAL_ENABLED=1`、填好预算限额，审核并启用工作流。
 
+## API 调用文档
+
+[中文 API 调用文档](docs/API调用文档.md)：鉴权、素材上传、单任务与批次生成、进度查询、下载和重试，附 [Python 调用示例](docs/examples/studio_api_example.py)。按 0.1.31-dev.8 源码核对，验证范围见文档。
+
 ## 开发与测试
 
 ```bash

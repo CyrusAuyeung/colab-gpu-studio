@@ -1,0 +1,43 @@
+{
+  "application_version": "0.1.31-dev.8",
+  "source_commit": "7b91190bed6fe5cea02d92c6ff039f64c7ebe497",
+  "verification": "isolated local Mock, TestClient, real network denied",
+  "passed_checks": [
+    "health version",
+    "missing auth rejected",
+    "login returns direct access_token",
+    "cookie GET accepted",
+    "cookie write rejected",
+    "api me is direct object",
+    "example submits batch",
+    "example resume creates no duplicate",
+    "batch replay returns same id",
+    "POST batch has job_ids not expanded jobs",
+    "changed payload conflicts",
+    "job idempotency required",
+    "single Mock submission 202",
+    "foreign Origin rejected",
+    "Mock jobs completed",
+    "example verifies and saves Mock output",
+    "all Mock leases deleted",
+    "multipart image upload 201",
+    "H3 request parameters resolve locally",
+    "H3 ref_1 binds to JPEG input",
+    "download requires authentication",
+    "authenticated source download",
+    "offline real batch fails closed",
+    "OpenAPI batch schema exists",
+    "zero outbound network attempts"
+  ],
+  "passed_count": 25,
+  "real_network_attempts": 0,
+  "paid_gpu_started": false,
+  "production_accessed": false,
+  "not_verified": [
+    "production deployment",
+    "Google OAuth",
+    "real model generation",
+    "actual billing",
+    "real runtime deletion"
+  ]
+}

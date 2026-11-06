@@ -90,6 +90,10 @@ To prevent secret leaks and unintended charges, real GPU access is disabled by d
 1. **Connect Google OAuth**: Follow the [Google OAuth and Drive setup guide](docs/OAUTH_SETUP.md), import your Google Cloud Web client JSON in the web settings, and connect Colab and Drive separately.
 2. **Enable built-in workflows or import new ones**: Refer to the [built-in workflow guide](docs/BUILTIN_WORKFLOWS.md) and the [model and workflow review process](docs/WORKFLOW_REVIEW.md). Set `GPU_REAL_ENABLED=1`, configure budget limits, and review and enable the workflows.
 
+## API Documentation
+
+See the [Chinese API guide](docs/API调用文档.md) for authentication, asset uploads, jobs and batches, polling, downloads, and retries, with a [Python client example](docs/examples/studio_api_example.py). The guide targets 0.1.31-dev.8; its verification scope is documented.
+
 ## Development and Testing
 
 ```bash
