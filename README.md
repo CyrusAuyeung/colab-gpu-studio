@@ -1,3 +1,5 @@
+**简体中文** | [English](README.en.md)
+
 > 当前版本 0.1.31-dev.8：已部署，真实 Colab GPU 可用（批次/租约交接、同机复用已恢复的模型）。变更见 [更新说明_main_2026-11-05.md](更新说明_main_2026-11-05.md)。离线/Mock 验收文档仍在 docs/，见 [离线实施记录](docs/OFFLINE_IMPLEMENTATION.md)。
 
 # Colab GPU Studio
