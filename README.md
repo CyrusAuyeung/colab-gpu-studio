@@ -11,7 +11,7 @@
 ## 下载与在线演示
 
 - **最新版本**：[0.2.6 Release](https://github.com/TizenryA/colab-gpu-studio/releases/tag/v0.2.6)（源码 + 更新说明）。
-- **预编译多平台独立包**：仍以 [0.2.0 多平台发布](https://github.com/TizenryA/colab-gpu-studio/releases/tag/v0.2.0) 为准（Windows / Linux / macOS x64+arm64 / Termux），可直接启动；0.2.6 的功能请用 Docker 部署或自行构建前端与镜像。
+- **预编译多平台独立包**：[0.2.6 Release 附件](https://github.com/TizenryA/colab-gpu-studio/releases/tag/v0.2.6) 提供 Windows x86_64 / Linux x86_64 / macOS x64 / macOS arm64 / Android Termux 五个包，解压即可启动，无需装 Python 或 Node；SHA-256 见附件里的 `SHA256SUMS.txt`。
 - **只读界面演示**：[打开 Cloudflare Workers 演示站](https://gpu-colab-studio-demo.tizenry.tech)。公开演示密码：`demo-readonly`。
 - 演示站使用 **0.1.31-dev.8 原版前端**，展示独立的 Mock 数据快照，不连接生产站、Google 或真实 GPU，不消耗 CU。生成、上传、修改、删除和授权均不可用；完整功能请下载后自行部署。
 - [演示说明与更多截图](docs/DEMO.md)。以下截图来自线上演示站的实际浏览器，不是设计稿。
