@@ -1779,6 +1779,100 @@ class Scheduler:
         )
         return False
 
+    def _orphan_instance_evidence(self, instance: dict) -> tuple[bool, dict | None]:
+        """Fail closed on ambiguous ownership, work, or remote allocation history."""
+        owner, instance_id = instance.get("owner_id"), self._instance_id(instance)
+        if not owner or not instance_id or instance.get("state") not in {"releasing", "cleanup_pending"}:
+            return False, None
+        jobs, leases = self._list("jobs"), self._leases_for()
+        current = instance.get("current_job_id")
+        if current and not any(
+            j["id"] == current and j.get("owner_id") == owner and j.get("state") in TERMINAL_STATES
+            for j in jobs
+        ):
+            return False, None
+        related_jobs = [j for j in jobs if j.get("instance_id") == instance_id or j["id"] == current]
+        if any(j.get("owner_id") != owner or j.get("state") not in TERMINAL_STATES for j in related_jobs):
+            return False, None
+        bound = [lease for lease in leases if lease.get("instance_id") == instance_id]
+        if any(lease.get("owner_id") != owner or lease.get("state") != "deleted" for lease in bound):
+            return False, None
+        lease_id = instance.get("lease_id")
+        if not lease_id:
+            # An unbound placeholder never reached provider allocation: the scheduler
+            # persists a lease intent before create(). Missing historical links are
+            # NOT equivalent to a never-bound placeholder.
+            related_ids = {j["id"] for j in related_jobs}
+            evidence = bool(current) and not bound and not any(j.get("lease_id") for j in related_jobs)
+            evidence = evidence and not any(row.get("owner_job_id") in related_ids for row in leases)
+            evidence = evidence and not any(instance.get(k) for k in ("runtime_id", "handle", "tunnel_endpoint"))
+            return evidence, None
+        lease = next((row for row in leases if row["id"] == lease_id), None)
+        if not lease or lease.get("owner_id") != owner or lease.get("state") != "deleted":
+            return False, None
+        if lease.get("provider") not in {"mock", "colab"}:
+            return False, None
+        if any(instance.get(k) != lease.get(k) for k in ("provider", "account_id")):
+            return False, None
+        if not all(lease.get(k) for k in ("owner_job_id", "request_id", "runtime_id")):
+            return False, None
+        if not any(j["id"] == lease["owner_job_id"] and j.get("owner_id") == owner
+                   and j.get("state") in TERMINAL_STATES for j in jobs):
+            return False, None
+        # Handoff can rebind the original lease to another instance. Never act on
+        # its runtime while any non-deleted alias or live job still references it.
+        if any(row.get("state") != "deleted" and row.get("runtime_id") == lease["runtime_id"]
+               for row in leases):
+            return False, None
+        if any((j.get("lease_id") == lease_id or j["id"] == lease["owner_job_id"])
+               and (j.get("owner_id") != owner or j.get("state") not in TERMINAL_STATES) for j in jobs):
+            return False, None
+        return True, lease
+
+    def _cleanup_orphan_instance(self, instance: dict) -> bool:
+        if self.instance_service is None:
+            return False
+        safe, lease = self._orphan_instance_evidence(instance)
+        if not safe:
+            return False
+        owner, instance_id = instance["owner_id"], self._instance_id(instance)
+        if lease:
+            job = {"id": lease["owner_job_id"], "owner_id": owner, "provider": lease["provider"],
+                   "account_id": lease.get("account_id")}
+            # Use a lease-owned identity, never an account-wide empty runtime list.
+            handle = self._intent_handle(job, lease)
+            if not handle:
+                return False
+            if isinstance(lease.get("handle"), dict):
+                handle = {**lease["handle"], **handle}
+            try:
+                status = self._provider(job).inspect(handle)
+            except Exception:
+                return False  # Unknown remote state must keep the budget reserved.
+            if not isinstance(status, dict) or status.get("deleted") is not True:
+                return False
+            if status.get("allocation_unknown") or status.get("operation_pending"):
+                return False
+        # Adapter I/O happens outside the dispatch lock. Revalidate ownership,
+        # then let mark_deleted take its own admission lock; expected_version is
+        # the atomic fence against a concurrent transition.
+        with self.db_store.dispatch_lock() as acquired:
+            if not acquired:
+                return False
+            latest = self._get("instances", instance_id, owner)
+            if not latest or latest.get("version") != instance.get("version"):
+                return False
+            safe, latest_lease = self._orphan_instance_evidence(latest)
+            if not safe or latest_lease != lease:
+                return False
+            expected_version = latest.get("version", 0)
+        try:
+            self.instance_service.mark_deleted(owner, instance_id,
+                                               expected_version=expected_version, remote_deleted=True)
+        except Exception:
+            return False
+        return True
+
     def watchdog(self) -> dict:
         """Independent process entrypoint for timeout, orphan, and cleanup compensation."""
         with self.db_store.dispatch_lock() as acquired:
@@ -1825,6 +1919,11 @@ class Scheduler:
                 and lease.get("owner_id") == associated.get("owner_id")
             ):
                 if self._cleanup_orphan_lease(lease):
+                    recovered += 1
+        # Legacy scheduler-only stores have no instance table or service.
+        if self.instance_service is not None and hasattr(self.db_store, "Session"):
+            for instance in self._list("instances"):
+                if self._cleanup_orphan_instance(instance):
                     recovered += 1
         return {"acquired": True, "recovered": recovered}
 
