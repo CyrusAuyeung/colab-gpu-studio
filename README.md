@@ -55,9 +55,14 @@
 # 1. 生成你的私密 .env 配置文件（把域名换成你自己的，本地玩就不改）
 uv run python scripts/init_env.py --site-url https://你的域名
 
-# 2. 启动服务（包含 api / worker / watchdog 三个容器）
+# 2. 复制一份属于自己的编排文件（改端口/挂载都在这份里，不会弄脏 git 工作区）
+cp docker-compose.example.yml docker-compose.yml
+
+# 3. 启动服务（包含 api / worker / watchdog 三个容器）
 docker compose up -d --build
 ```
+
+> 仓库里只跟踪 `docker-compose.example.yml`，本地的 `docker-compose.yml` 已在 `.gitignore` 里，改端口或挂载不会再和 `git pull` 打架。`scripts/deploy.sh` 也会在缺失时自动复制一份。
 
 服务默认只监听本机 `127.0.0.1:8788`，公网访问建议用 Caddy 或 Nginx 反代并套上 HTTPS。数据全部存在 `studio-data` 卷里，**千万别手滑敲 `docker compose down -v` 把数据卷删了**。
 

@@ -55,9 +55,14 @@ Install Docker, Docker Compose, and Python first (Python is used to generate the
 # 1. Generate your private .env configuration file (replace the domain with your own; leave it unchanged for local use)
 uv run python scripts/init_env.py --site-url https://your-domain
 
-# 2. Start the services (three containers: api / worker / watchdog)
+# 2. Copy your own compose file (port/mount tweaks live here, so the git tree stays clean)
+cp docker-compose.example.yml docker-compose.yml
+
+# 3. Start the services (three containers: api / worker / watchdog)
 docker compose up -d --build
 ```
+
+> Only `docker-compose.example.yml` is tracked; your local `docker-compose.yml` is git-ignored, so changing ports or mounts no longer conflicts with `git pull`. `scripts/deploy.sh` creates it automatically when missing.
 
 By default, the service listens only on the local address `127.0.0.1:8788`. For public access, use Caddy or Nginx as a reverse proxy with HTTPS. All data is stored in the `studio-data` volume. **Do not accidentally run `docker compose down -v`, which deletes the data volume.**
 

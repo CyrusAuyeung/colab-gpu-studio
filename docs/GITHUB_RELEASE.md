@@ -14,7 +14,7 @@
 更新版本时，建议同步修改以下文件中的版本号：
 - `api/app/__init__.py`
 - `pyproject.toml`
-- `docker-compose.yml`
+- `docker-compose.example.yml`（本地 `docker-compose.yml` 不入库，改它不算版本变更）
 - `web/package.json`
 
 注意区分 **程序版本号**（如 `0.1.28`）与单个 **工作流模板版本号**（如 H3 ref2v 的 `1.4.0`），避免混淆。
