@@ -25,6 +25,17 @@ MOSS 编码器使用 `qwen3.5_9b_bf16.safetensors`。Krea 正向包含 `Conditio
 
 三份需自行取得的权重标注为 `user-provided`；私人 Drive ID 已移除。模型许可各自独立，本仓库不分发模型权重。
 
+### 三份 user-provided 权重从哪来
+
+| 文件 | 获取方式 |
+|---|---|
+| `Krea_2_zidiusArt_Melancholy.safetensors` | 作者整合包 <https://pan.quark.cn/s/695385ff7182>（`模型/lora/krea2/`）。C 站 zidius 的 Melancholy 目前只有 ZImageTurbo 版 <https://civitai.com/models/2334593>，Krea 2 版以整合包为准 |
+| `feverdream-epoch-07.safetensors` | 作者整合包同上；C 站 Fever Dream Mood（patrik，选 MOSS 版本）<https://civitai.com/models/2675439> |
+| `TJFilmMoss_V1.safetensors` | 作者整合包同上；C 站 TJFilm Style（vimoi，选 MossImage v1.0）<https://civitai.com/models/2840370> |
+
+整合包内 `模型/lora/krea2` 与 `模型/lora/moss` 的文件大小与本目录 `models.json` 记录逐字节一致，可据此核对。内置模板 `krea2-moss-dual-t2i 1.1.1` 只随包下发其中 4 个 Hugging Face 公开 LoRA，剩下 3 个需要按本目录自行挂载。
+
+
 ## 实测与限制
 
 2026-11-05 在 Colab T4 高内存规格真实跑完 992×992、8＋25 步，图片保存及13份权重来源核验通过，运行时已删除。采样约292秒。相关运行器改动离线测试130项通过、1项跳过；不代表当前仓库增加此目录后进行了新的GPU测试。

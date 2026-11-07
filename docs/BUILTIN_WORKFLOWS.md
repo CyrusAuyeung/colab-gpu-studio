@@ -7,10 +7,28 @@
 | 模板文件 | 工作流名称 | 版本 | 推荐显卡 | 特点说明 |
 |---|---|---|---|---|
 | `krea2-moss-dual-t2i-1.0.0.json` | Krea-2 + MOSS 双采 (原模版) | 1.0.0 | T4 HighRAM | 先用 Krea-2 Turbo 快速铺构图，再用 MOSS 0.36 降噪精修细节 |
-| `krea2-moss-dual-t2i-1.1.0.json` | Krea-2 + MOSS 双采 (MJ胶片精修版) | 1.1.0 | T4 HighRAM | 全链路串联 7 个电影胶片与 MJ 质感 LoRA（Krea 忧郁/胶片/写实/柔光/滤镜 + MOSS 梦境/胶片） |
+| `krea2-moss-dual-t2i-1.1.1.json` | Krea-2 + MOSS 双采 (胶片精修版) | 1.1.1 | T4 HighRAM | 串联 4 个公开可下载的胶片与 MJ 质感 LoRA（胶片 2、写实引擎、影视柔光、风格滤镜），权重随任务从 Hugging Face 拉取 |
 | `moss-image-sft-t2i-1.0.0.json` | MOSS 单图 | 1.0.0 | T4 | OpenMOSS SFT (int8) 标准文生图 |
 | `minimax-h3-i2v-1.1.0.json` | MiniMax H3 首尾帧视频 | 1.1.0 | L4 | 上传首帧（可加尾帧）生成带原生声音的短视频，挂了 8 步加速 LoRA |
 | `minimax-h3-ref2v-1.4.0.json` | MiniMax H3 多参考图视频 | 1.4.0 | L4 | 最多垫 6 张参考图锁角色/画风生成有声视频，功能最全（见下） |
+
+### Krea2 胶片精修：为什么内置只带 4 个 LoRA
+
+1.1.0 曾把 7 个 LoRA 全串进图里，但仓库并不分发这 7 份权重，任务一开始就报
+`LoRA 文件没有随任务下发`（而且此时 Colab 运行时已经分配，白烧配额）。1.1.1 起只内置能公开下载的 4 个：
+
+| LoRA | 来源 |
+|---|---|
+| `KR2-电影胶片2-TJFilmStyleKrea2_V2` | Hugging Face `Alex995647/loras-krea-2` |
+| `realism_engine_krea2_v3.1_new` | Hugging Face `yufusoft/realism_engine_krea2_v3.1` |
+| `krea2-Cc-MJ-影视柔光` / `krea2-Cc-MJ-风格滤镜` | Hugging Face `RunningHubAI/rh-krea2-cc-mj-lora` |
+
+另外 3 个作者私有 LoRA（`Krea_2_zidiusArt_Melancholy`、`feverdream-epoch-07`、`TJFilmMoss_V1`）不在本仓库分发，可自行取得：
+
+- 作者整合包（含全部 7 个 LoRA 与对应 custom nodes）：<https://pan.quark.cn/s/695385ff7182>
+- C 站：TJFilm Style（含 `TJFilmMoss_V1`）<https://civitai.com/models/2840370>；Fever Dream Mood（含 `feverdream-epoch-07`）<https://civitai.com/models/2675439>；zidius 的 Melancholy（C 站为 ZImageTurbo 版）<https://civitai.com/models/2334593>
+
+想用满 7 个 LoRA 的图，参考 `workflows/krea2-moss-dual-t2i/1.2.0/`（原生 ComfyUI API 图 + 权重清单），把它们放进自己 ComfyUI 的 `models/loras/` 后手动挂载。
 
 ### H3 多参考图 (`1.4.0`) 网页可选配置
 

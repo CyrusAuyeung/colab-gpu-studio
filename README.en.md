@@ -38,7 +38,7 @@ The frontend is a React single-page app optimized for mobile touch controls, and
 
 | Workflow | Version | Recommended GPU | Description |
 |---|---|---|---|
-| `krea2-moss-dual-t2i` | 1.0.0 / 1.1.0 | T4 HighRAM | 1.0.0 is the original template; 1.1.0 chains 7 MJ and film-style refinement LoRAs throughout the pipeline to substantially improve image quality |
+| `krea2-moss-dual-t2i` | 1.0.0 / 1.1.1 | T4 HighRAM | 1.0.0 is the original template; 1.1.1 chains 4 publicly downloadable film/MJ texture LoRAs (1.1.0 referenced 7 LoRAs but shipped none of the weight files, so it has been retired) |
 | `moss-image-sft-t2i` | 1.0.0 | T4 | Single-image text-to-image generation with OpenMOSS |
 | `minimax-h3-i2v` | 1.1.0 | L4 | Generate a short video with audio from a first frame and an optional last frame, with an 8-step acceleration LoRA |
 | `minimax-h3-ref2v` | 1.4.0 | L4 | Generate video with audio from up to 6 reference images; choose 4-step, 8-step, refinement, or 20-step modes, with a seamless anime VAE |

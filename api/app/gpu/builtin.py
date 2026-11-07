@@ -16,6 +16,26 @@ _MODEL_FIELDS = {
 }
 
 
+def _bundle_loras(filename: str, bundle: dict, manifest: dict) -> None:
+    """A bundled template may only reference weights this repository actually ships.
+
+    The runtime refuses to start a job whose graph names a LoRA that the manifest does not
+    bring in (``_check_loras``), so a bundle that skips this check dies after a GPU runtime
+    has already been allocated.  Fail at import time instead, and never let a bundle point at
+    a private Drive file id — every install has a different Drive.
+    """
+    weights = manifest["dependencies"].get("weight_files") or []
+    for item in weights:
+        if item.get("source") == "drive":
+            raise ValueError(f"内置模板 {filename} 不允许引用私人 Drive 权重：{item.get('target')}")
+    shipped = {w.get("target", "").removeprefix("loras/") for w in weights}
+    for node_id, node in bundle["api_graph"].items():
+        if isinstance(node, dict) and node.get("class_type") == "LoraLoaderModelOnly":
+            name = node.get("inputs", {}).get("lora_name")
+            if name not in shipped:
+                raise ValueError(f"内置模板 {filename} 的节点 {node_id} 引用了未随包下发的 LoRA：{name}")
+
+
 @lru_cache(maxsize=1)
 def _bundles() -> tuple[dict, ...]:
     catalog = json.loads((_ROOT / "catalog.json").read_text(encoding="utf-8"))
@@ -34,6 +54,7 @@ def _bundles() -> tuple[dict, ...]:
             raise ValueError("内置模板模型身份不一致")
         identities.add(identity)
         bundle["manifest"] = manifest
+        _bundle_loras(filename, bundle, manifest)
         result.append(bundle)
     return tuple(result)
 
