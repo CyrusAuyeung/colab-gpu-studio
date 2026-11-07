@@ -10,7 +10,8 @@ The frontend is a React single-page app optimized for mobile touch controls, and
 
 ## Downloads and Online Demo
 
-- **Download the full version**: [0.2.0 multi-platform release](https://github.com/TizenryA/colab-gpu-studio/releases/tag/v0.2.0). See the release asset descriptions for installation instructions and the scope of verification on each platform.
+- **Latest version**: [0.2.6 release](https://github.com/TizenryA/colab-gpu-studio/releases/tag/v0.2.6) (source + release notes).
+- **Prebuilt multi-platform bundles**: still the [0.2.0 multi-platform release](https://github.com/TizenryA/colab-gpu-studio/releases/tag/v0.2.0) (Windows / Linux / macOS x64+arm64 / Termux) — they launch as-is; for 0.2.6 features use Docker deployment or build the web app and image yourself.
 - **Read-only UI demo**: [Open the Cloudflare Workers demo](https://gpu-colab-studio-demo.tizenry.tech). Public demo password: `demo-readonly`.
 - The demo uses the **original 0.1.31-dev.8 frontend** with a separate Mock data snapshot. It does not connect to the production site, Google, or a real GPU, and does not consume CU. Generation, uploads, edits, deletion, and authorization are unavailable; download and self-host the full version for complete functionality.
 - [Demo details and more screenshots](docs/DEMO.md). The screenshots below were captured in a real browser on the live demo site; they are not design mockups.
@@ -30,9 +31,10 @@ The frontend is a React single-page app optimized for mobile touch controls, and
 
 1. **Saving CU comes first**: The ComfyUI environment and tens of gigabytes of large-model weights are cached in your Google Drive. Let an inexpensive CPU runtime handle the heavy lifting of downloading models and setting up the environment. The expensive GPU (T4 / L4) only does three things after startup: **restore the environment → sample the output → shut down and delete the instance immediately**.
 2. **Comfortable image and video creation on your phone**: No more struggling with dense ComfyUI node connections in a mobile browser or watching a Colab tab to prevent disconnections. The frontend automatically renders forms from each workflow, while queued jobs keep running in the background even after you close the browser.
-3. **Four refined workflow templates included**: Built-in templates cover Krea+MOSS dual-sampling image generation, MOSS text-to-image, MiniMax H3 image-to-video with first and last frames, and MiniMax H3 multi-reference image-to-video (supporting up to 6 reference images, 8-step Turbo v1.1, 1.2x latent refinement, a seamless anime VAE, and multiple SFW LoRAs for motion, camera movement, and consistent visual style).
+3. **One-click enablement in the browser**: built-in templates start as drafts; the Workflows page walks you through validation, license confirmation, weight locking, a real GPU smoke test and publishing, polling automatically and stopping at the failing step.
+4. **Four refined workflow templates included**: Built-in templates cover Krea+MOSS dual-sampling image generation, MOSS text-to-image, MiniMax H3 image-to-video with first and last frames, and MiniMax H3 multi-reference image-to-video (supporting up to 6 reference images, 8-step Turbo v1.1, 1.2x latent refinement, a seamless anime VAE, and multiple SFW LoRAs for motion, camera movement, and consistent visual style).
 
-> **Safety note**: New installations enable only the `demo-mock` offline demo by default (no Google connection and no compute-unit charges). The four built-in real workflows appear as drafts in the workflow list. They are not enabled for use until you connect your own Google OAuth, confirm the model licenses, and complete a test run, preventing an accidental click from burning CU right after installation.
+> **Safety note**: a fresh install only enables the offline `demo-mock` workflow (no Google, no cost). The four real built-in workflows sit in the list as drafts; clicking "enable" and confirming the cost runs one real GPU smoke test (billed per minute) and publishes automatically once it passes. See [built-in workflows](docs/BUILTIN_WORKFLOWS.md).
 
 ## Built-in Workflows
 
