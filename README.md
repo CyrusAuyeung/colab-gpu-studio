@@ -1,16 +1,16 @@
 **简体中文** | [English](README.en.md)
 
-> 当前版本 0.1.31-dev.8：已部署，真实 Colab GPU 可用（批次/租约交接、同机复用已恢复的模型）。变更见 [更新说明_main_2026-11-05.md](更新说明_main_2026-11-05.md)。离线/Mock 验收文档仍在 docs/，见 [离线实施记录](docs/OFFLINE_IMPLEMENTATION.md)。
+> 当前版本 0.2.0：支持 Google 多账号目录、实例中心、常开保留（Retain）与受控工作台。变更见 [docs/RELEASE_NOTES_0.2.0.md](docs/RELEASE_NOTES_0.2.0.md) 与 [更新说明_main_2026-11-05.md](更新说明_main_2026-11-05.md)。离线/Mock 验收文档仍在 docs/，见 [离线实施记录](docs/OFFLINE_IMPLEMENTATION.md)。
 
 # Colab GPU Studio
 
 用手机就能调 Colab GPU 跑 ComfyUI 的个人 AI 工作台（出图 + H3 视频）。
 
-前端是针对手机触控优化的 React 单页，后端是 FastAPI。平时网页、任务队列、历史作品都存在你自己的小鸡（VPS）上，完全不占 GPU；只有你点下“生成”的那一刻，后端才会去向 Google Colab 申请 GPU，跑完把成品存回来，**立刻销毁 runtime，绝不让你的计算单元（CU）空转白扣费**。
+前端是针对手机触控优化的 React 单页，后端是 FastAPI。平时网页、任务队列、历史作品都存在你自己的小鸡（VPS）上，完全不占 GPU；只有你点下“生成”的那一刻，后端才会去向 Google Colab 申请 GPU，跑完把成品存回来，**默认立刻销毁 runtime（也可按需开启短期保留复用），绝不让你的计算单元（CU）空转白扣费**。
 
 ## 下载与在线演示
 
-- **完整版下载**：[0.1.31-dev.8 多平台发布](https://github.com/TizenryA/colab-gpu-studio/releases/tag/v0.1.31-dev.8)。各平台安装方式与验证范围见 Release 附件说明。
+- **完整版下载**：[0.2.0 多平台发布](https://github.com/TizenryA/colab-gpu-studio/releases/tag/v0.2.0)。各平台安装方式与验证范围见 Release 附件说明。
 - **只读界面演示**：[打开 Cloudflare Workers 演示站](https://gpu-colab-studio-demo.tizenry.tech)。公开演示密码：`demo-readonly`。
 - 演示站使用 **0.1.31-dev.8 原版前端**，展示独立的 Mock 数据快照，不连接生产站、Google 或真实 GPU，不消耗 CU。生成、上传、修改、删除和授权均不可用；完整功能请下载后自行部署。
 - [演示说明与更多截图](docs/DEMO.md)。以下截图来自线上演示站的实际浏览器，不是设计稿。

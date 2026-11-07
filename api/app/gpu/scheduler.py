@@ -81,6 +81,8 @@ class Scheduler:
         storage_factory: Callable | None = None,
         config: GpuConfig | None = None,
         clock: Callable[[], float] | None = None,
+        instance_service: Any | None = None,
+        instance_service_factory: Callable | None = None,
     ):
         # Base Store owns the database and cross-process lock; GPU records go
         # through the independent Repository (gpu_jobs, gpu_leases, ...).
@@ -96,6 +98,27 @@ class Scheduler:
             self.store = store
             self.db_store = store
         self.config = config or GpuConfig.from_env()
+        self.clock = clock or time.time
+        if instance_service is not None:
+            self.instance_service = instance_service
+        elif instance_service_factory is not None:
+            self.instance_service = self._factory(instance_service_factory, {})
+        elif not hasattr(self.db_store, "Session"):
+            self.instance_service = None
+        else:
+            # v0.2 deployments provide InstanceService; old installations and
+            # lightweight legacy stores intentionally remain scheduler-only.
+            try:
+                from .instances import InstanceService
+            except (ImportError, ModuleNotFoundError):
+                self.instance_service = None
+            else:
+                try:
+                    self.instance_service = InstanceService(self.store, self.clock, self.config)
+                except (TypeError, ValueError, AttributeError):
+                    logging.getLogger(__name__).warning("instance service unavailable; using legacy lease mode")
+                    self.instance_service = None
+        self.instances = self.instance_service
         self.provider_factory = provider_factory or (
             lambda job: default_provider_factory(
                 job, self.config, store=self.store, owner_id=job.get("owner_id")
@@ -107,7 +130,327 @@ class Scheduler:
             )
         )
         self.storage_factory = storage_factory
-        self.clock = clock or time.time
+
+    def _instance_call(self, method: str, *args, **kwargs):
+        """Call an optional v0.2 service without weakening legacy compatibility."""
+        service = self.instance_service
+        if service is None:
+            return None
+        if hasattr(service, "clock"):
+            # Scheduler tests and recovery callers may replace ``clock`` after
+            # construction.  InstanceService must use the same deadline
+            # source or a retained instance can be released immediately.
+            service.clock = self.clock
+        target = getattr(service, method, None)
+        if target is None:
+            return None
+        try:
+            return target(*args, **kwargs)
+        except TypeError:
+            # A few offline service doubles expose the same operation with a
+            # narrower signature.  Do not make the scheduler depend on that
+            # test-only detail.
+            if kwargs:
+                return target(*args)
+            raise
+
+    @staticmethod
+    def _instance_id(instance: dict | None) -> str | None:
+        if not isinstance(instance, dict):
+            return None
+        value = instance.get("instance_id") or instance.get("id")
+        return value if isinstance(value, str) and value else None
+
+    @staticmethod
+    def _instance_epoch(value: Any) -> float | None:
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            return float(value)
+        if isinstance(value, str):
+            try:
+                return float(value)
+            except ValueError:
+                return None
+        return None
+
+    def _instance_patch(self, instance: dict | None) -> dict:
+        if not isinstance(instance, dict):
+            return {}
+        patch = {}
+        instance_id = self._instance_id(instance)
+        if instance_id:
+            patch["instance_id"] = instance_id
+        for key in (
+            "account_id",
+            "account_alias_snapshot",
+            "instance_label",
+            "gpu_reported",
+            "retention_mode",
+            "retained_until",
+            "idle_deadline_at",
+            "hard_deadline_at",
+            "selection_reason",
+        ):
+            if key in instance and instance[key] is not None:
+                patch[key] = instance[key]
+        if instance.get("state") is not None:
+            patch["instance_state"] = instance["state"]
+        hard_deadline = self._instance_epoch(instance.get("hard_deadline_at"))
+        if hard_deadline is not None:
+            patch["deadline_epoch"] = hard_deadline
+        return patch
+
+    def _merge_instance(self, job: dict, instance: dict | None) -> dict:
+        patch = self._instance_patch(instance)
+        if not patch:
+            return job
+        return self._update("jobs", job["id"], patch, job.get("owner_id"))
+
+    def _service_instances(self) -> list[dict]:
+        service = self.instance_service
+        if service is None:
+            return []
+        raw = getattr(service, "instances", None)
+        if isinstance(raw, (list, tuple)):
+            return [dict(item) for item in raw if isinstance(item, dict)]
+        if isinstance(raw, dict):
+            return [dict(item) for item in raw.values() if isinstance(item, dict)]
+        owners = {job.get("owner_id") for job in self._list("jobs") if job.get("owner_id")}
+        for name in ("list", "all", "list_instances", "instances"):
+            target = getattr(service, name, None)
+            if target is None or not callable(target):
+                continue
+            collected = []
+            for owner in owners or {None}:
+                try:
+                    result = target(owner) if owner is not None else target()
+                except TypeError:
+                    continue
+                if isinstance(result, dict):
+                    result = result.values()
+                if isinstance(result, (list, tuple)):
+                    collected.extend(item for item in result if isinstance(item, dict))
+            if collected:
+                return collected
+        return []
+
+    def _service_instance_for_job(self, job: dict) -> dict | None:
+        instance_id = job.get("instance_id")
+        if not instance_id:
+            return None
+        for instance in self._service_instances():
+            if self._instance_id(instance) == instance_id:
+                return instance
+        return None
+
+    def _lifecycle(self, job: dict) -> str:
+        policy = job.get("execution_policy") or {}
+        lifecycle = policy.get("lifecycle") or policy.get("mode")
+        if lifecycle in {"save", "batch", "smart", "retain"}:
+            return lifecycle
+        if policy.get("retention") in {True, "retain"} or job.get("retention_requested"):
+            return "retain"
+        return "save"
+
+    def _instance_job(self, job: dict) -> dict:
+        """Give InstanceService the legacy batch mode as an explicit lifecycle.
+
+        Batch jobs created before v0.2 store ``mode=smart`` in their policy,
+        while InstanceService deliberately reads ``lifecycle``.  Translate
+        only the service-facing copy so the persisted legacy request remains
+        unchanged and the instance service stays authoritative for retention.
+        """
+        lifecycle = self._lifecycle(job)
+        policy = job.get("execution_policy") or {}
+        if policy.get("lifecycle") == lifecycle:
+            return job
+        return {**job, "execution_policy": {**policy, "lifecycle": lifecycle}}
+
+    def _is_v020_job(self, job: dict) -> bool:
+        return self.instance_service is not None and not job.get("legacy_scheduler_only")
+
+    def _allocate_instance(self, job: dict) -> dict:
+        if not self._is_v020_job(job) or job.get("instance_id"):
+            return job
+        try:
+            instance = self._instance_call("allocate", self._instance_job(job))
+        except Exception as exc:
+            return self._begin_failure(job, "gpu_instance_allocation_failed", self._safe_error(exc))
+        if instance is None:
+            return job
+        # Retarget a legacy idle lease before merging the instance metadata so
+        # the lease handoff and job mirror cannot briefly disagree.
+        job = self._reuse_instance_lease(job, instance)
+        return self._merge_instance(job, instance)
+
+    def _reuse_instance_lease(self, job: dict, instance: dict | None) -> dict:
+        """Retarget the retained instance's lease instead of creating a second runtime."""
+        if not self._is_v020_job(job) or not isinstance(instance, dict):
+            return job
+        lease_id = instance.get("lease_id")
+        if not isinstance(lease_id, str) or not lease_id:
+            return job
+        lease = self._get("leases", lease_id, job.get("owner_id"))
+        if not lease or lease.get("state") != "idle":
+            return job
+        deadline = lease.get("deadline_epoch")
+        idle_deadline = lease.get("idle_deadline_at")
+        if idle_deadline is not None and self.clock() >= float(idle_deadline):
+            return job
+        if deadline is not None and self.clock() >= float(deadline):
+            return job
+        handle = lease.get("handle")
+        lease_patch = {
+            "state": "active",
+            "owner_job_id": job["id"],
+            "current_job_id": job["id"],
+            "idle_deadline_at": None,
+            "last_active_at": self.clock(),
+        }
+        if isinstance(handle, dict):
+            lease_patch["handle"] = {
+                **handle,
+                "job_id": job["id"],
+                "owner_job_id": job["id"],
+            }
+        self._update("leases", lease_id, lease_patch, job.get("owner_id"))
+        job_patch = {"lease_id": lease_id}
+        if deadline is not None:
+            job_patch["deadline_epoch"] = deadline
+        return self._update("jobs", job["id"], job_patch, job.get("owner_id"))
+
+    def _bind_instance_lease(self, job: dict, lease: dict) -> tuple[dict, dict]:
+        if not self._is_v020_job(job) or not job.get("instance_id"):
+            return job, lease
+        if lease.get("instance_id") == job.get("instance_id") and lease.get("instance_bound"):
+            return job, lease
+        try:
+            instance = self._instance_call("bind_lease", self._instance_job(job), lease)
+        except Exception as exc:
+            raise SchedulerError(f"instance lease binding failed: {self._safe_error(exc)}") from exc
+        patch = {"instance_id": job["instance_id"], "instance_bound": True}
+        if job.get("account_id"):
+            patch["account_id"] = job["account_id"]
+        lease = self._update("leases", lease["id"], patch, job.get("owner_id"))
+        if instance:
+            job = self._merge_instance(job, instance)
+        return job, lease
+
+    def _mark_instance(self, method: str, job: dict, **kwargs) -> dict:
+        if not self._is_v020_job(job) or not job.get("instance_id"):
+            return job
+        try:
+            instance = self._instance_call(method, self._instance_job(job), **kwargs)
+        except Exception as exc:
+            logging.getLogger(__name__).warning("instance %s failed: %s", method, self._safe_error(exc))
+            return job
+        return self._merge_instance(job, instance)
+
+    def _complete_instance(self, job: dict, success: bool) -> tuple[dict, dict | None]:
+        """Let InstanceService decide whether a completed job is retained or released."""
+        if not self._is_v020_job(job) or not job.get("instance_id"):
+            return job, None
+        if job.get("instance_completion_recorded"):
+            return job, self._service_instance_for_job(job)
+        try:
+            instance = self._instance_call("complete", self._instance_job(job), success=success)
+        except Exception as exc:
+            raise SchedulerError(f"instance completion failed: {self._safe_error(exc)}") from exc
+        if isinstance(instance, dict) and instance.get("state") == "retained_idle":
+            policy = job.get("execution_policy") or {}
+            idle_seconds = policy.get("idle_seconds") if policy.get("mode") == "smart" else None
+            if idle_seconds is not None:
+                # Legacy batch smart mode specifies seconds, whereas the v0.2
+                # service defaults retention from its config.  Reapply the
+                # legacy duration through the service boundary, never by
+                # editing the instance row behind its CAS/version checks.
+                try:
+                    minutes = float(idle_seconds) / 60.0
+                    target = getattr(self.instance_service, "retention")
+                    self.instance_service.clock = self.clock
+                    retained = target(
+                        job.get("owner_id"),
+                        self._instance_id(instance),
+                        "smart",
+                        minutes,
+                        f"scheduler-smart:{job['id']}",
+                    )
+                except (TypeError, ValueError, AttributeError):
+                    # Narrow legacy service doubles may not expose the v0.2
+                    # retention signature; their completed state remains valid.
+                    pass
+                else:
+                    if isinstance(retained, dict):
+                        instance = retained
+        job = self._merge_instance(job, instance)
+        job = self._update(
+            "jobs", job["id"], {"instance_completion_recorded": True}, job.get("owner_id")
+        )
+        return job, instance if isinstance(instance, dict) else self._service_instance_for_job(job)
+
+    def _record_instance_usage(self, job: dict, instance: dict | None, ended_at: float) -> None:
+        """Close one idempotent instance-lifetime segment after remote deletion."""
+        if not self._is_v020_job(job):
+            return
+        record_usage = getattr(self.instance_service, "record_usage", None)
+        if not callable(record_usage):
+            return
+        instance_id = job.get("instance_id") or self._instance_id(instance)
+        if not instance_id:
+            return
+        instance = instance if isinstance(instance, dict) else {}
+        started_at = (
+            instance.get("allocation_requested_at")
+            or job.get("started_epoch")
+            or job.get("started_at")
+        )
+        confirmed_at = instance.get("deletion_confirmed_at") or ended_at
+        started_epoch = self._instance_epoch(started_at)
+        confirmed_epoch = self._instance_epoch(confirmed_at) or float(ended_at)
+        elapsed_minutes = (
+            max(0.0, confirmed_epoch - started_epoch) / 60.0
+            if started_epoch is not None
+            else 0.0
+        )
+        is_mock = self._provider_name(job) == "mock"
+        try:
+            rate = float(job.get("unit_rate") or self.config.unit_rate or 0.0)
+        except (TypeError, ValueError):
+            rate = 0.0
+        payload = {
+            "instance_id": instance_id,
+            "job_id": job.get("id"),
+            "segment_key": f"instance-lifetime:{instance_id}",
+            "allocation_requested_at": started_at,
+            "deletion_confirmed_at": confirmed_at,
+            "started_at": started_at,
+            "ended_at": confirmed_at,
+            "estimated_units": 0.0 if is_mock else elapsed_minutes * rate,
+            # Provider billing is not available at deletion time; never invent CU.
+            "actual_units": None,
+        }
+        record_usage(job.get("owner_id"), payload)
+
+    def _mark_instance_deleted(self, job: dict) -> dict:
+        """Record deletion only after the provider has explicitly confirmed it."""
+        if not self._is_v020_job(job) or not job.get("instance_id"):
+            return job
+        try:
+            if hasattr(self.instance_service, "clock"):
+                self.instance_service.clock = self.clock
+            target = getattr(self.instance_service, "mark_deleted")
+            instance = target(
+                job.get("owner_id"),
+                job["instance_id"],
+                remote_deleted=True,
+            )
+            self._record_instance_usage(job, instance, self.clock())
+        except Exception as exc:
+            raise SchedulerError(f"instance deletion confirmation failed: {self._safe_error(exc)}") from exc
+        # Watchdog orphan cleanup has no job row to mirror; the ledger still
+        # closes against the instance service and the lease can be finalized.
+        if self._get("jobs", job["id"], job.get("owner_id")) is None:
+            return job
+        return self._merge_instance(job, instance)
 
     def _factory(self, factory: Callable, job: dict):
         """Allow injected adapters to receive both job and the real base Store."""
@@ -233,6 +576,13 @@ class Scheduler:
         try:
             runtime = self._effective_runtime(job)
             provider = self._provider(job)
+            if self._provider_name(job) != "mock" and job.get("requested_spec"):
+                try:
+                    self._select_spec(job, provider)
+                except ProviderUnavailable as exc:
+                    return self._begin_failure(job, "gpu_provider_unavailable", self._safe_error(exc))
+                except Exception as exc:
+                    return self._begin_failure(job, "gpu_spec_invalid", self._safe_error(exc))
             ok, code, patch = self._reserve_budget(job, provider)
         except Exception as exc:
             return self._set_state(
@@ -320,22 +670,25 @@ class Scheduler:
             return current
         request_id, runtime_id = str(uuid.uuid4()), f"studio-{uuid.uuid4().hex}"
         now = self.clock()
-        return self._create(
-            "leases",
-            job["owner_id"],
-            {
-                "owner_job_id": job["id"],
-                "provider": self._provider_name(job),
-                "state": "creating",
-                "request_id": request_id,
-                "runtime_id": runtime_id,
-                "created_epoch": now,
-                "last_seen": now,
-                "delete_attempts": 0,
-                "create_attempts": 0,
-                "deadline_epoch": now + self._effective_runtime(job) * 60,
-            },
-        )
+        deadline = job.get("deadline_epoch")
+        if deadline is None:
+            deadline = now + self._effective_runtime(job) * 60
+        payload = {
+            "owner_job_id": job["id"],
+            "provider": self._provider_name(job),
+            "state": "creating",
+            "request_id": request_id,
+            "runtime_id": runtime_id,
+            "created_epoch": now,
+            "last_seen": now,
+            "delete_attempts": 0,
+            "create_attempts": 0,
+            "deadline_epoch": deadline,
+        }
+        for key in ("instance_id", "account_id"):
+            if job.get(key) is not None:
+                payload[key] = job[key]
+        return self._create("leases", job["owner_id"], payload)
 
     @staticmethod
     def _safe_error(exc: Exception) -> str:
@@ -550,6 +903,12 @@ class Scheduler:
             if not acquired:
                 return job
             lease = self._ensure_lease(job)
+        if job.get("lease_id") != lease["id"]:
+            job = self._update("jobs", job["id"], {"lease_id": lease["id"]}, job.get("owner_id"))
+        try:
+            job, lease = self._bind_instance_lease(job, lease)
+        except SchedulerError as exc:
+            return self._begin_failure(job, "gpu_instance_conflict", str(exc))
         try:
             provider = self._provider(job)
         except Exception as exc:
@@ -663,7 +1022,10 @@ class Scheduler:
             return self._begin_failure(job, "gpu_runtime_inspect_failed", self._safe_error(exc))
         if status.get("deleted"):
             return self._begin_failure(job, "gpu_runtime_missing", "GPU runtime disappeared")
-        return self._set_state(job, "loading", "GPU runtime is ready") if status.get("ready") else job
+        if status.get("ready"):
+            job = self._mark_instance("mark_ready", job)
+            return self._set_state(job, "loading", "GPU runtime is ready")
+        return job
 
     def _load(self, job: dict) -> dict:
         lease = self._lease(job)
@@ -681,6 +1043,15 @@ class Scheduler:
         else:
             execution_id = str(uuid.uuid4())
             job = self._update('jobs',job['id'],{'execution_id':execution_id},job.get('owner_id'))
+        if self._is_v020_job(job) and job.get("instance_id"):
+            execution = self._get("executions", execution_id, job.get("owner_id"))
+            if execution and execution.get("instance_id") != job["instance_id"]:
+                self._update(
+                    "executions",
+                    execution_id,
+                    {"instance_id": job["instance_id"], "account_id": job.get("account_id")},
+                    job.get("owner_id"),
+                )
         try:
             # The Drive token is attached to an in-memory copy only; it is never persisted.
             result = self._executor(job).start(
@@ -690,6 +1061,7 @@ class Scheduler:
             return self._begin_failure(job, "gpu_start_failed", self._safe_error(exc))
         if isinstance(result, dict) and result.get("execution_id") not in {None, execution_id}:
             return self._begin_failure(job, "gpu_execution_id_mismatch", "executor changed execution ID")
+        job = self._mark_instance("job_busy", job)
         return self._set_state(job, "running", "GPU execution started")
 
     def _note_restored(self, job: dict, lease: dict, timings: dict) -> dict:
@@ -1031,9 +1403,42 @@ class Scheduler:
                     self._event(job,'completed','Mock outputs verified; lease reused')
                     return self._get('jobs',job['id'],job['owner_id'])
         final_state = job.get("cleanup_final_state") or job.get("requested_outcome") or "failed"
+        if self._is_v020_job(job) and job.get("instance_id"):
+            try:
+                job, instance = self._complete_instance(job, final_state == "completed")
+            except SchedulerError as exc:
+                return self._set_state(
+                    job,
+                    "cleanup_pending",
+                    "GPU instance completion is pending",
+                    error_code="gpu_instance_completion_pending",
+                    error_message=str(exc),
+                )
+            if isinstance(instance, dict) and instance.get("state") == "retained_idle":
+                if lease:
+                    lease_patch = {"state": "idle", "current_job_id": None, "last_seen": self.clock()}
+                    if instance.get("idle_deadline_at") is not None:
+                        lease_patch["idle_deadline_at"] = instance["idle_deadline_at"]
+                    if instance.get("hard_deadline_at") is not None:
+                        lease_patch["deadline_epoch"] = instance["hard_deadline_at"]
+                    self._update("leases", lease["id"], lease_patch, job.get("owner_id"))
+                if job.get("execution_id"):
+                    self._update(
+                        "executions",
+                        job["execution_id"],
+                        {"state": "completed", "finished_at": self.clock()},
+                        job.get("owner_id"),
+                    )
+                return self._set_state(
+                    job,
+                    final_state,
+                    "GPU cleanup completed; instance retained",
+                    runtime_deleted=False,
+                )
         policy=job.get('execution_policy') or {}
         if (lease and job.get('batch_id') and final_state=='completed'
                 and policy.get('mode')=='smart' and self._provider_name(job)=='mock'
+                and not self._is_v020_job(job)
                 and self.clock()<float(lease.get('deadline_epoch') or 0)):
             with self.db_store.dispatch_lock() as acquired:
                 if not acquired:
@@ -1071,11 +1476,22 @@ class Scheduler:
             status = provider.inspect(handle)
             confirmed = bool(status.get("deleted"))
             if not confirmed:
-                confirmed = bool(provider.delete(handle))
+                response = provider.delete(handle)
+                # A truthy response is not enough: providers may return an
+                # accepted/pending response before the remote runtime is gone.
+                confirmed = response is True or (
+                    isinstance(response, dict) and response.get("deleted") is True
+                )
             error = None
         except Exception as exc:
             confirmed, error = False, self._safe_error(exc)
         attempts = int(lease.get("delete_attempts") or 0) + 1
+        if confirmed:
+            try:
+                job = self._mark_instance_deleted(job)
+            except SchedulerError as exc:
+                confirmed = False
+                error = str(exc)
         if not confirmed:
             delay = min(
                 self.config.cleanup_retry_max_seconds,
@@ -1141,7 +1557,14 @@ class Scheduler:
         if state == "validating":
             return self._validate(job)
         if state == "waiting_for_capacity":
-            if job.get('compatibility_signature') and hasattr(self.store,'attach_idle_lease'):
+            if self._is_v020_job(job):
+                allocated = self._allocate_instance(job)
+                if allocated.get("state") in TERMINAL_STATES | {"cleaning_up", "cleanup_pending"}:
+                    return allocated
+                job = self._reuse_instance_lease(allocated, allocated)
+                if not job.get("instance_id"):
+                    return job
+            elif job.get('compatibility_signature') and hasattr(self.store,'attach_idle_lease'):
                 with self.db_store.dispatch_lock() as acquired:
                     if not acquired:
                         return job
@@ -1149,7 +1572,7 @@ class Scheduler:
                         if self.store.attach_idle_lease(job['owner_id'],job['id'],idle['id'],self.clock()):
                             job=self._get('jobs',job['id'],job['owner_id'])
                             break
-            if self._has_capacity_blocker(job):
+            if not self._is_v020_job(job) and self._has_capacity_blocker(job):
                 return job
             if self._await_prep(job):
                 return job if job.get("awaiting_prep") else self._update("jobs", job["id"], {"awaiting_prep": True}, job.get("owner_id"))
@@ -1238,7 +1661,12 @@ class Scheduler:
             and lease.get("runtime_id")
         ):
             return False
-        job = {"id": owner_job_id, "owner_id": owner_id, "provider": lease.get("provider", "mock")}
+        job = {
+            "id": owner_job_id,
+            "owner_id": owner_id,
+            "provider": lease.get("provider", "mock"),
+            "instance_id": lease.get("instance_id"),
+        }
         handle = self._lease_handle(lease) or self._intent_handle(job, lease)
         if handle is None:
             return False
@@ -1251,11 +1679,18 @@ class Scheduler:
             status = provider.inspect(handle)
             confirmed = bool(status.get("deleted"))
             if not confirmed:
-                confirmed = bool(provider.delete(handle))
+                response = provider.delete(handle)
+                confirmed = response is True or (
+                    isinstance(response, dict) and response.get("deleted") is True
+                )
             error = None
         except Exception as exc:
             confirmed, error = False, self._safe_error(exc)
         if confirmed:
+            try:
+                self._mark_instance_deleted(job)
+            except SchedulerError:
+                return False
             self._update("leases", lease["id"], {"state": "deleted", "last_seen": self.clock()}, owner_id)
             return True
         attempts = int(lease.get("delete_attempts") or 0) + 1
@@ -1282,13 +1717,14 @@ class Scheduler:
         with self.db_store.dispatch_lock() as acquired:
             if not acquired:
                 return {"acquired": False, "recovered": 0, "reason": "busy"}
+            all_jobs = self._list("jobs")
             jobs = [
                 x
-                for x in self._list("jobs")
+                for x in all_jobs
                 if x.get("state") in ACTIVE_STATES
                 and (x.get("state") in {"cleanup_pending", "cleaning_up"} or self._expired(x))
             ]
-            job_by_id = {x["id"]: x for x in self._list("jobs")}
+            job_by_id = {x["id"]: x for x in all_jobs}
             leases = [
                 x
                 for x in self._leases_for()
@@ -1309,7 +1745,9 @@ class Scheduler:
             if current and current.get("state") != before:
                 recovered += 1
         for lease in leases:
-            if lease.get('state')=='idle' and self.clock()<min(
+            instance = next((row for row in self._service_instances() if self._instance_id(row) == lease.get("instance_id")), None)
+            stopping = bool(instance and (instance.get("manual_stop_requested") or instance.get("state") in {"releasing", "cleanup_pending"}))
+            if lease.get('state')=='idle' and not stopping and self.clock()<min(
                     float(lease.get('idle_deadline_at') or 0),float(lease.get('deadline_epoch') or 0)):
                 continue
             associated = job_by_id.get(lease.get("owner_job_id"))

@@ -28,7 +28,11 @@ def utcnow() -> datetime:
 _DISPATCH_LOCK_KEY = int.from_bytes(
     hashlib.sha256(b"colab-gpu-studio:dispatch").digest()[:8], "big", signed=True
 )
+_ADMISSION_LOCK_KEY = int.from_bytes(
+    hashlib.sha256(b"colab-gpu-studio:admission").digest()[:8], "big", signed=True
+)
 _MEMORY_DISPATCH_LOCKS: dict[str, threading.Lock] = {}
+_MEMORY_ADMISSION_LOCKS: dict[str, threading.Lock] = {}
 _MEMORY_DISPATCH_LOCKS_GUARD = threading.Lock()
 
 
@@ -84,6 +88,7 @@ class Store:
         if self.url in {"sqlite:///:memory:", "sqlite://"}:
             kwargs["poolclass"] = StaticPool
         self._memory_lock = threading.RLock()
+        self._dispatch_state = threading.local()
         self.engine = create_engine(self.url, connect_args=connect_args, **kwargs)
         self.Session = sessionmaker(self.engine, expire_on_commit=False, class_=Session)
         self.create_all()
@@ -208,6 +213,25 @@ class Store:
         path = Path(database).expanduser().resolve()
         return path.with_name(path.name + ".dispatch.lock")
 
+    def _sqlite_admission_lock_path(self) -> Path | None:
+        if self.engine.dialect.name != "sqlite":
+            return None
+        database = self.engine.url.database
+        if not database or database == ":memory:":
+            return None
+        path = Path(database).expanduser().resolve()
+        return path.with_name(path.name + ".admission.lock")
+
+    def _dispatch_enter(self) -> None:
+        self._dispatch_state.depth = getattr(self._dispatch_state, "depth", 0) + 1
+
+    def _dispatch_exit(self) -> None:
+        depth = getattr(self._dispatch_state, "depth", 0)
+        self._dispatch_state.depth = max(0, depth - 1)
+
+    def _dispatch_held_by_current_thread(self) -> bool:
+        return bool(getattr(self._dispatch_state, "depth", 0))
+
     @contextmanager
     def upload_lock(self, identity):
         """Non-blocking, database-scoped upload coordination; released on crash."""
@@ -251,12 +275,21 @@ class Store:
 
     @contextmanager
     def admission_lock(self, timeout=1.0):
-        """Bounded wait for HTTP admission; scheduler ticks remain non-blocking."""
+        """Serialize admissions without waiting on a long scheduler snapshot.
+
+        ``dispatch_lock`` is also used around scheduler/watchdog list scans.  A
+        large historical job snapshot can therefore outlive the HTTP timeout,
+        even though admission only needs the database transaction to be
+        atomic.  Admissions use a separate cross-process lock; the local
+        dispatch fallback is retained for the intentionally nested lock case
+        covered by the legacy in-memory tests.
+        """
         import time
 
+        lock_context = self.dispatch_lock if self._dispatch_held_by_current_thread() else self._admission_try_lock
         deadline = time.monotonic() + timeout
         while True:
-            with self.dispatch_lock() as acquired:
+            with lock_context() as acquired:
                 if acquired:
                     yield True
                     return
@@ -267,8 +300,8 @@ class Store:
             time.sleep(min(0.01, remaining))
 
     @contextmanager
-    def dispatch_lock(self):
-        """Non-blocking cross-process lock for short scheduler ticks."""
+    def _admission_try_lock(self):
+        """Try the admission-only lock once, without touching dispatch state."""
         if self.engine.dialect.name == "postgresql":
             connection = self.engine.connect()
             acquired = False
@@ -276,7 +309,7 @@ class Store:
                 acquired = bool(
                     connection.execute(
                         text("SELECT pg_try_advisory_lock(:lock_key)"),
-                        {"lock_key": _DISPATCH_LOCK_KEY},
+                        {"lock_key": _ADMISSION_LOCK_KEY},
                     ).scalar()
                 )
                 yield acquired
@@ -285,16 +318,16 @@ class Store:
                     if acquired:
                         connection.execute(
                             text("SELECT pg_advisory_unlock(:lock_key)"),
-                            {"lock_key": _DISPATCH_LOCK_KEY},
+                            {"lock_key": _ADMISSION_LOCK_KEY},
                         )
                 finally:
                     connection.close()
             return
 
-        lock_path = self._sqlite_dispatch_lock_path()
+        lock_path = self._sqlite_admission_lock_path()
         if lock_path is None and self.engine.dialect.name == "sqlite":
             with _MEMORY_DISPATCH_LOCKS_GUARD:
-                lock = _MEMORY_DISPATCH_LOCKS.setdefault(self.url, threading.Lock())
+                lock = _MEMORY_ADMISSION_LOCKS.setdefault(self.url, threading.Lock())
             acquired = lock.acquire(blocking=False)
             try:
                 yield acquired
@@ -315,6 +348,68 @@ class Store:
                 try:
                     yield True
                 finally:
+                    fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+            return
+        raise RuntimeError(f"不支持的数据库准入锁方言: {self.engine.dialect.name}")
+
+    @contextmanager
+    def dispatch_lock(self):
+        """Non-blocking cross-process lock for short scheduler ticks."""
+        if self.engine.dialect.name == "postgresql":
+            connection = self.engine.connect()
+            acquired = False
+            try:
+                acquired = bool(
+                    connection.execute(
+                        text("SELECT pg_try_advisory_lock(:lock_key)"),
+                        {"lock_key": _DISPATCH_LOCK_KEY},
+                    ).scalar()
+                )
+                if acquired:
+                    self._dispatch_enter()
+                yield acquired
+            finally:
+                try:
+                    if acquired:
+                        connection.execute(
+                            text("SELECT pg_advisory_unlock(:lock_key)"),
+                            {"lock_key": _DISPATCH_LOCK_KEY},
+                        )
+                finally:
+                    if acquired:
+                        self._dispatch_exit()
+                    connection.close()
+            return
+
+        lock_path = self._sqlite_dispatch_lock_path()
+        if lock_path is None and self.engine.dialect.name == "sqlite":
+            with _MEMORY_DISPATCH_LOCKS_GUARD:
+                lock = _MEMORY_DISPATCH_LOCKS.setdefault(self.url, threading.Lock())
+            acquired = lock.acquire(blocking=False)
+            try:
+                if acquired:
+                    self._dispatch_enter()
+                yield acquired
+            finally:
+                if acquired:
+                    self._dispatch_exit()
+                    lock.release()
+            return
+        if lock_path is not None:
+            import fcntl
+
+            lock_path.parent.mkdir(parents=True, exist_ok=True)
+            with lock_path.open("a+") as lock_file:
+                try:
+                    fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError:
+                    yield False
+                    return
+                try:
+                    self._dispatch_enter()
+                    yield True
+                finally:
+                    self._dispatch_exit()
                     fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
             return
         raise RuntimeError(f"不支持的数据库调度锁方言: {self.engine.dialect.name}")

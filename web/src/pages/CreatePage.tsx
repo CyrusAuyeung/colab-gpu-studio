@@ -8,12 +8,16 @@ import type {
 } from '../lib/gpu-api';
 import { GpuParamForm, splitParams } from '../components/GpuParamForm';
 import { ReferencePicker, supportsReferences } from '../components/ReferencePicker';
+import { RuntimeSelection } from '../components/RuntimeSelection';
+import type { RuntimeSelectionValue } from '../components/RuntimeSelection';
+import type { GpuAccount, GpuInstance } from '../components/AccountDirectory';
 import { Card, InfoTip, Segmented } from '../components/ui';
-import { RUNTIME_HELP, STRATEGIES } from '../lib/labels';
+import { RUNTIME_HELP } from '../lib/labels';
 import { parameterList, parameterKey, shown } from '../lib/ui-helpers';
 import styles from '../gpu.module.css';
 
 type Category = 'image' | 'video';
+export type RuntimeChoice = RuntimeSelectionValue;
 
 const isVideoKey = (key: string) => /i2v|video|ref2v|t2v/i.test(key);
 
@@ -47,7 +51,8 @@ function buildSizes(defW: number, defH: number, step: number, min: number, max: 
 export function CreatePanel({
   projectId, models, workflows, presets, settings, manifest, params, setParams, gallery,
   selectedAssets, setSelectedAssets, uploadProgress, onUpload, setModelId, workflowId, setWorkflowId,
-  runtime, setRuntime, maxRuntime, setMaxRuntime, batchCount, setBatchCount, batchMode, setBatchMode,
+  runtime, setRuntime, maxRuntime, setMaxRuntime, batchCount, setBatchCount, batchMode,
+  runtimeChoice, accounts, instances, onRuntimeChoiceChange,
   loading, error, onSubmit, onApplyPreset, onSavePreset,
 }: {
   projectId: string;
@@ -73,8 +78,12 @@ export function CreatePanel({
   setMaxRuntime: (value: number) => void;
   batchCount: number;
   setBatchCount: (n: number) => void;
-  batchMode: 'save' | 'smart' | 'batch';
-  setBatchMode: (m: 'save' | 'smart' | 'batch') => void;
+  batchMode: 'save' | 'smart' | 'batch' | 'retain';
+  setBatchMode: (m: 'save' | 'smart' | 'batch' | 'retain') => void;
+  runtimeChoice: RuntimeChoice;
+  accounts: GpuAccount[];
+  instances: GpuInstance[];
+  onRuntimeChoiceChange: (value: RuntimeChoice) => void;
   loading: string;
   error: string;
   onSubmit: () => void;
@@ -148,7 +157,6 @@ export function CreatePanel({
   const split = useMemo(() => splitParams(manifest, excluded), [manifest, excluded]);
   const promptValue = String(params[promptKey] ?? '');
   const maxMinutesCap = typeof settings?.budget?.max_runtime_minutes === 'number' ? settings.budget.max_runtime_minutes : 60;
-  const strategy = STRATEGIES.find((s) => s.value === batchMode) || STRATEGIES[0];
   const patch = (next: Record<string, unknown>) => setParams({ ...params, ...next });
 
   if (!projectId) {
@@ -336,16 +344,9 @@ export function CreatePanel({
             { value: 'colab', label: 'Colab GPU', sub: settings?.real_enabled ? '真实出图' : '未启用', disabled: !settings?.real_enabled, icon: <Cloud size={17} strokeWidth={1.6} aria-hidden /> },
           ]}
         />
-        <div className="field">
-          <div className={styles.paramLabel}>
-            <label htmlFor="batch-mode-select">运行策略</label>
-            <InfoTip label="运行策略说明" text={<>{STRATEGIES.map((s) => <span key={s.value} className={styles.tipLine}><b>{s.name}</b>：{s.long}</span>)}</>} />
-          </div>
-          <select id="batch-mode-select" aria-label="运行策略" value={batchMode} onChange={(e) => setBatchMode(e.target.value as 'save' | 'smart' | 'batch')}>
-            {STRATEGIES.map((s) => <option key={s.value} value={s.value}>{s.name}：{s.short}</option>)}
-          </select>
-          <span className={styles.hint}>{strategy.long}</span>
-        </div>
+        <RuntimeSelection value={runtimeChoice} accounts={accounts} instances={instances} provider={runtime}
+          onChange={onRuntimeChoiceChange} />
+        {batchMode === 'retain' && <p className="muted small">保留机器会继续产生 CU；本站只承诺保留到设定截止，Google 仍可能提前回收。</p>}
         {runtime === 'colab' && (
           <div className="field">
             <label htmlFor="max-runtime">单个任务最长运行（分钟）</label>

@@ -144,6 +144,10 @@ class MockColabProvider:
 
     def recover_handle(self, handle):
         record=self._runtimes.get(handle.get('runtime_name')) or self._tombstones.get(handle.get('runtime_name'))
+        if record is None and handle.get('mock') is True and handle.get('owner_id') and handle.get('request_id') and handle.get('runtime_id') and handle.get('runtime_name') == f"mock-runtime-{handle['runtime_id']}":
+            # The lease is persisted; the simulated provider registry is not.
+            record = dict(handle)
+            self._runtimes[handle['runtime_name']] = record
         if not record or any(record.get(key)!=handle.get(key) for key in ('runtime_id','request_id')):
             raise ComputeError('mock recovery identity mismatch')
         if record.get('owner_id') not in {None,handle.get('owner_id')}:
@@ -328,8 +332,16 @@ def default_provider_factory(
         except (ImportError, ModuleNotFoundError):
             return DisabledProvider("real Colab provider is unavailable")
         if hasattr(GoogleColabProvider, "from_environment"):
-            return GoogleColabProvider.from_environment(store=store, owner_id=owner_id)
-        return GoogleColabProvider(store, owner_id)
+            return GoogleColabProvider.from_environment(
+                store=store,
+                owner_id=owner_id or job.get("owner_id"),
+                account_id=job.get("account_id"),
+            )
+        return GoogleColabProvider(
+            store,
+            owner_id or job.get("owner_id"),
+            account_id=job.get("account_id"),
+        )
     return DisabledProvider(f"unknown GPU provider: {name}")
 
 
@@ -345,7 +357,11 @@ def default_executor_factory(
             from .mcp import MCPGPUExecutor
         except (ImportError, ModuleNotFoundError):
             return DisabledExecutor()
-        return MCPGPUExecutor.from_environment(store=store, owner_id=owner_id)
+        return MCPGPUExecutor.from_environment(
+            store=store,
+            owner_id=owner_id or job.get("owner_id"),
+            account_id=job.get("account_id"),
+        )
     return DisabledExecutor()
 
 

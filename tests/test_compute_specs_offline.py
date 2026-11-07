@@ -68,4 +68,5 @@ def test_real_batch_blocked_when_offline_or_wrong_mode(monkeypatch, tmp_path):
     monkeypatch.delenv("STUDIO_OFFLINE_TEST")
     monkeypatch.setenv("GPU_REAL_ENABLED", "1")
     r = c.post("/api/gpu/batches", json=_body("smart"), headers={"Idempotency-Key": "k"})
-    assert r.status_code == 422
+    assert r.status_code == 503
+    assert r.json()['error']['code'] == 'REAL_LIFECYCLE_UNVERIFIED'

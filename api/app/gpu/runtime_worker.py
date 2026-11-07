@@ -8,6 +8,8 @@ Python string from the caller, and records every outcome in status.json.
 from __future__ import annotations
 
 import base64
+import contextlib
+import fcntl
 import hashlib
 import importlib.metadata
 import io
@@ -15,12 +17,14 @@ import json
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import sysconfig
 import tarfile
 import tempfile
 import time
+import uuid
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
@@ -48,6 +52,20 @@ REVIEWED_CUSTOM_NODES = {
         "comfyui-krea2-conditioning",
 }
 REPO_ID = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
+
+# Retained Comfy services deliberately have no payload-controlled filesystem or
+# network address.  The root is fixed in the worker image; tests may replace the
+# module constant with an isolated directory, but callers cannot do so.
+COMFY_SERVICE_ROOT = Path("/content/ai-studio/comfy-services")
+COMFY_SERVICE_STATE = "state.json"
+COMFY_SERVICE_LOCK = "manager.lock"
+COMFY_JOB_LOCK = "job.lock"
+COMFY_SERVICE_ACTIONS = frozenset({"health", "read_safe_log", "stop_current_job"})
+COMFY_SERVICE_PORT = 8188
+COMFY_SERVICE_HOST = "127.0.0.1"
+MAX_SAFE_LOG_BYTES = 8 * 1024
+_SERVICE_HANDLES: dict[int, Any] = {}
+_SERVICE_LOG_HANDLES: dict[int, Any] = {}
 
 
 class WorkerError(RuntimeError):
@@ -77,6 +95,302 @@ def _atomic_json(path: Path, value: Any) -> None:
 
 def _status(root: Path, state: str, **fields: Any) -> None:
     _atomic_json(root / "status.json", {"state": state, "updated_at": time.time(), **fields})
+
+
+def _instance_service_name(instance_id: str) -> str:
+    """Return a non-path-derived directory name for a validated UUID."""
+    try:
+        parsed = uuid.UUID(instance_id)
+    except (AttributeError, ValueError, TypeError) as exc:
+        raise WorkerError("instance_id must be a UUID") from exc
+    if str(parsed) != str(instance_id).lower():
+        raise WorkerError("instance_id must use canonical UUID form")
+    return hashlib.sha256(("comfy-service:" + parsed.hex).encode("ascii")).hexdigest()[:32]
+
+
+def _comfy_service_dir(instance_id: str) -> Path:
+    """Resolve the only directory a retained service may use."""
+    name = _instance_service_name(instance_id)
+    root = COMFY_SERVICE_ROOT.expanduser().resolve()
+    if COMFY_SERVICE_ROOT.exists() and COMFY_SERVICE_ROOT.is_symlink():
+        raise WorkerError("Comfy service root must not be a symlink")
+    root.mkdir(mode=0o700, parents=True, exist_ok=True)
+    service = root / name
+    if service.exists() and service.is_symlink():
+        raise WorkerError("Comfy service directory must not be a symlink")
+    resolved = service.resolve()
+    if root not in resolved.parents:
+        raise WorkerError("Comfy service directory escaped fixed root")
+    return resolved
+
+
+@contextlib.contextmanager
+def _file_lock(path: Path):
+    """Serialize worker-local service management without trusting a PID lock."""
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    with path.open("a+") as stream:
+        fcntl.flock(stream.fileno(), fcntl.LOCK_EX)
+        try:
+            yield stream
+        finally:
+            fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
+
+
+def _service_fingerprint(
+    commit: str, custom_nodes: list[dict], weights: list[dict], manifest: dict | None = None
+) -> str:
+    """Fingerprint the inputs that make a resident process safe to reuse.
+
+    A declared dependency signature is authoritative when present.  For old
+    manifests, the installed package set remains a deterministic fallback; it
+    is intentionally separate from the warm-disk fingerprint below.
+    """
+    manifest = manifest or {}
+    declared = manifest.get("dependency_signature", manifest.get("dependencies_signature"))
+    if declared is None:
+        declared = manifest.get("dependencies", manifest.get("requirements_sha256"))
+    if declared is None:
+        packages = sorted(f"{d.metadata.get('Name', '').lower()}=={d.version}" for d in importlib.metadata.distributions())
+        declared = hashlib.sha256("\n".join(packages).encode()).hexdigest()
+    body = {
+        "version": 1,
+        "comfy_commit": commit,
+        "python": f"{sys.version_info.major}.{sys.version_info.minor}",
+        "custom_nodes": sorted(f"{n.get('repo')}@{n.get('commit')}" for n in custom_nodes),
+        "weights": sorted(
+            (w.get("target"), w.get("sha256"), w.get("size"), w.get("source", "huggingface"))
+            for w in weights
+        ),
+        "dependencies": declared,
+    }
+    return hashlib.sha256(json.dumps(body, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+
+def _process_metadata(pid: int) -> dict:
+    """Read identity data from Linux procfs; failure means ownership is unknown."""
+    if isinstance(pid, bool) or not isinstance(pid, int) or pid <= 0:
+        raise WorkerError("Comfy process ownership is unknown")
+    proc = Path("/proc") / str(pid)
+    try:
+        raw_stat = (proc / "stat").read_text(encoding="utf-8")
+        after_comm = raw_stat.rsplit(")", 1)[1].split()
+        start_id = after_comm[19]
+        raw_cmdline = (proc / "cmdline").read_bytes()
+        cmdline = [item.decode("utf-8", "replace") for item in raw_cmdline.split(b"\0") if item]
+        cwd = os.readlink(proc / "cwd")
+    except (OSError, IndexError, UnicodeError) as exc:
+        raise WorkerError("Comfy process ownership is unknown") from exc
+    return {"start_id": start_id, "cmdline": cmdline, "cwd": cwd}
+
+
+def _trusted_process_metadata(service_dir: Path, state: dict) -> dict:
+    """Verify PID, start time, command and cwd before any reuse or signal."""
+    pid = state.get("pid")
+    expected_start = state.get("process_start_id", state.get("start_id"))
+    if not isinstance(expected_start, str) or not expected_start:
+        raise WorkerError("Comfy process ownership is unknown")
+    metadata = _process_metadata(pid)
+    if metadata.get("start_id") != expected_start:
+        raise WorkerError("Comfy process ownership check failed")
+    expected_cwd = (service_dir / "ComfyUI").resolve()
+    actual_cwd = Path(str(metadata.get("cwd", ""))).resolve()
+    command = metadata.get("cmdline")
+    if not isinstance(command, list) or len(command) != 6:
+        raise WorkerError("Comfy process ownership check failed")
+    if Path(command[0]).name != Path(sys.executable).name or command[1] != "main.py":
+        raise WorkerError("Comfy process ownership check failed")
+    if command[2:] != ["--listen", COMFY_SERVICE_HOST, "--port", str(COMFY_SERVICE_PORT)]:
+        raise WorkerError("Comfy process ownership check failed")
+    if actual_cwd != expected_cwd:
+        raise WorkerError("Comfy process ownership check failed")
+    return metadata
+
+
+def _read_service_state(service_dir: Path) -> dict | None:
+    try:
+        value = json.loads((service_dir / COMFY_SERVICE_STATE).read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        return None
+    return value if isinstance(value, dict) else None
+
+
+def _service_api_url(path: str) -> str:
+    if path not in {"/system_stats", "/interrupt"}:
+        raise WorkerError("Comfy service endpoint is not allowed")
+    return f"http://{COMFY_SERVICE_HOST}:{COMFY_SERVICE_PORT}{path}"
+
+
+def _stop_service_if_owned(service_dir: Path) -> bool:
+    """Stop only the process whose complete identity matches its state file."""
+    state = _read_service_state(service_dir)
+    if not state:
+        return False
+    _trusted_process_metadata(service_dir, state)
+    pid = state["pid"]
+    handle = _SERVICE_HANDLES.pop(pid, None)
+    log_handle = _SERVICE_LOG_HANDLES.pop(pid, None)
+    try:
+        if handle is not None:
+            if handle.poll() is None:
+                handle.terminate()
+                try:
+                    handle.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    handle.kill()
+            return True
+        os.killpg(pid, signal.SIGTERM)
+        return True
+    except ProcessLookupError:
+        return True
+    finally:
+        if log_handle is not None:
+            log_handle.close()
+        (service_dir / COMFY_SERVICE_STATE).unlink(missing_ok=True)
+
+
+def _start_comfy_service(service_dir: Path, fingerprint: str, cache_reason: str) -> dict:
+    comfy = service_dir / "ComfyUI"
+    if not comfy.is_dir() or comfy.is_symlink():
+        raise WorkerError("Comfy service checkout is unavailable")
+    log_path = service_dir / "comfy.log"
+    log_handle = log_path.open("ab", buffering=0)
+    args = [sys.executable, "main.py", "--listen", COMFY_SERVICE_HOST, "--port", str(COMFY_SERVICE_PORT)]
+    try:
+        process = subprocess.Popen(
+            args,
+            cwd=comfy,
+            stdout=log_handle,
+            stderr=subprocess.STDOUT,
+            shell=False,
+            start_new_session=True,
+        )
+        metadata = _process_metadata(process.pid)
+        state = {
+            "pid": process.pid,
+            "process_start_id": metadata["start_id"],
+            "start_id": metadata["start_id"],
+            "env_fingerprint": fingerprint,
+            "cache_reason": cache_reason,
+            "cwd": str(comfy.resolve()),
+            "argv": args,
+            "host": COMFY_SERVICE_HOST,
+            "port": COMFY_SERVICE_PORT,
+            "updated_at": time.time(),
+        }
+        _SERVICE_HANDLES[process.pid] = process
+        _SERVICE_LOG_HANDLES[process.pid] = log_handle
+        _atomic_json(service_dir / COMFY_SERVICE_STATE, state)
+        _http_json(_service_api_url("/system_stats"), timeout=5)
+        return {**state, "system_stats": True, "service_dir": str(service_dir)}
+    except Exception:
+        try:
+            if "process" in locals() and process.poll() is None:
+                process.terminate()
+        finally:
+            log_handle.close()
+        raise
+
+
+def _ensure_comfy_service(
+    instance_id: str,
+    commit: str,
+    custom_nodes: list[dict],
+    weights: list[dict],
+    *,
+    manifest: dict | None = None,
+    expected_fingerprint: str | None = None,
+) -> dict:
+    """Return a real, healthy resident service or fail closed."""
+    service_dir = _comfy_service_dir(instance_id)
+    fingerprint = expected_fingerprint or _service_fingerprint(commit, custom_nodes, weights, manifest)
+    state = _read_service_state(service_dir)
+    restart_reason = None
+    if state is not None:
+        _trusted_process_metadata(service_dir, state)
+        if state.get("env_fingerprint") == fingerprint:
+            try:
+                stats = _http_json(_service_api_url("/system_stats"), timeout=5)
+            except WorkerError:
+                restart_reason = "restart_health_failed"
+            else:
+                state.update(cache_reason="hot_reuse", updated_at=time.time())
+                _atomic_json(service_dir / COMFY_SERVICE_STATE, state)
+                return {**state, "system_stats": stats, "service_dir": str(service_dir)}
+        else:
+            restart_reason = "restart_fingerprint_mismatch"
+        _stop_service_if_owned(service_dir)
+    reason = restart_reason or "cold_start"
+    return _start_comfy_service(service_dir, fingerprint, reason)
+
+
+def _validate_workbench_request(request: dict) -> dict:
+    if not isinstance(request, dict):
+        raise WorkerError("workbench action must be a JSON object")
+    action = request.get("action")
+    if action not in COMFY_SERVICE_ACTIONS:
+        raise WorkerError("workbench action is not allowed")
+    allowed = {"action", "instance_id"} | ({"max_bytes"} if action == "read_safe_log" else set())
+    if set(request) - allowed:
+        raise WorkerError("workbench action contains unsupported fields")
+    _instance_service_name(request.get("instance_id"))
+    if action == "read_safe_log":
+        limit = request.get("max_bytes", MAX_SAFE_LOG_BYTES)
+        if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= MAX_SAFE_LOG_BYTES:
+            raise WorkerError("max_bytes is outside the safe bound")
+    return request
+
+
+def _safe_log(service_dir: Path, limit: int) -> str:
+    try:
+        raw = (service_dir / "comfy.log").read_bytes()[-limit:]
+    except OSError as exc:
+        raise WorkerError("safe log is unavailable") from exc
+    text = raw.decode("utf-8", "replace")
+    text = re.sub(r"(?i)authorization\s*:\s*bearer\s+\S+", "Authorization: Bearer [redacted]", text)
+    text = re.sub(r"(?i)\b(token|secret|password|api[_-]?key)\s*[=:]\s*\S+", r"\1=[redacted]", text)
+    return text[-limit:]
+
+
+def _handle_workbench_action(request: dict) -> dict:
+    request = _validate_workbench_request(request)
+    service_dir = _comfy_service_dir(request["instance_id"])
+    state = _read_service_state(service_dir)
+    try:
+        if state is None:
+            raise WorkerError("service state is unavailable")
+        _trusted_process_metadata(service_dir, state)
+        if request["action"] == "health":
+            stats = _http_json(_service_api_url("/system_stats"), timeout=5)
+            return {
+                "state": "healthy",
+                "cache_reason": state.get("cache_reason", "unknown"),
+                "pid": state["pid"],
+                "process_start_id": state.get("process_start_id"),
+                "system_stats": stats,
+            }
+        if request["action"] == "read_safe_log":
+            return {
+                "state": "ok",
+                "cache_reason": state.get("cache_reason", "unknown"),
+                "log": _safe_log(service_dir, request.get("max_bytes", MAX_SAFE_LOG_BYTES)),
+            }
+        _http_json(_service_api_url("/interrupt"), "POST", {}, timeout=5)
+        return {"state": "interrupt_requested", "cache_reason": state.get("cache_reason", "unknown")}
+    except Exception as exc:  # safe protocol never reports an unprobed healthy state
+        return {"state": "unknown", "reason": _safe_error(exc)[:200]}
+
+
+def _main_workbench_action(path: str) -> int:
+    action_path = Path(path)
+    if action_path.is_symlink() or not action_path.is_file():
+        return 2
+    try:
+        request = json.loads(action_path.read_text(encoding="utf-8"))
+        result = _handle_workbench_action(request)
+    except Exception as exc:  # malformed/unsupported requests fail closed
+        result = {"state": "unknown", "reason": _safe_error(exc)[:200]}
+    print(json.dumps(result, ensure_ascii=False, sort_keys=True))
+    return 0
 
 
 def _run(
@@ -1096,6 +1410,8 @@ class _MCPManifestStore:
 
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
+    if len(argv) == 2 and argv[0] == "workbench":
+        return _main_workbench_action(argv[1])
     if len(argv) != 1:
         return 2
     payload_path = Path(argv[0]).resolve()

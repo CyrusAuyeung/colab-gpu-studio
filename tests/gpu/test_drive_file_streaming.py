@@ -3,6 +3,7 @@ import hashlib
 import httpx
 import pytest
 from app.db import Store
+from app.gpu.accounts import AccountService
 from app.gpu.drive import DriveError, DriveStorage
 from app.gpu.repository import Repository
 
@@ -23,13 +24,87 @@ class FileStream(httpx.SyncByteStream):
                 yield part
 
 
-def storage_for(repo, source, handler):
-    storage = DriveStorage({'id': 'job', 'owner_id': 'u'}, repo,
+def storage_for(repo, source, handler, account_id=None):
+    job = {'id': 'job', 'owner_id': 'u'}
+    if account_id is not None:
+        job['account_id'] = account_id
+    storage = DriveStorage(job, repo,
         google=FakeGoogle(), client=httpx.Client(transport=httpx.MockTransport(handler)),
         sleeper=lambda _: None)
     storage._job_parent = lambda key: 'fake-parent'
     storage._find_existing_file = lambda *args: None
     return storage
+
+
+def test_migrated_default_account_resumes_legacy_upload_session(tmp_path):
+    source = tmp_path / 'legacy.mp4'
+    source.write_bytes(b'legacy output')
+    repo = Repository(Store('sqlite://'))
+    key = 'outputs/job/legacy.mp4'
+    sha = hashlib.sha256(source.read_bytes()).hexdigest()
+    key_hash = hashlib.sha256(key.encode()).hexdigest()
+    legacy_session_id = hashlib.sha256(f'upload:u:{key_hash}:{sha}'.encode()).hexdigest()
+    from app.security import encrypt_secret
+
+    repo.create(
+        'files', 'u', {
+            'kind': 'drive_upload_session', 'state': 'uploading',
+            'encrypted_session': encrypt_secret(
+                'https://www.googleapis.com/upload/drive/v3/files?upload_id=legacy'
+            ),
+            'size': source.stat().st_size, 'sha256': sha, 'key_hash': key_hash,
+        }, record_id=legacy_session_id,
+    )
+    calls = []
+
+    def handler(request):
+        calls.append(request.method)
+        if request.method == 'PUT':
+            assert request.headers['Content-Range'] == f'bytes */{source.stat().st_size}'
+            return httpx.Response(201, json={'id': 'legacy-remote', 'size': str(source.stat().st_size)})
+        if request.method == 'GET':
+            return httpx.Response(200, stream=FileStream(source))
+        pytest.fail('legacy upload recovery must not initialize a new session')
+
+    storage = storage_for(
+        repo, source, handler, AccountService.default_account_id('u')
+    )
+    result = storage.put_file(key, source, 'video/mp4')
+
+    assert result['id'] == 'legacy-remote'
+    assert result['verified'] is True
+    assert calls == ['PUT', 'GET']
+
+
+def test_explicit_account_does_not_fallback_to_legacy_upload_session(tmp_path):
+    source = tmp_path / 'isolated.mp4'
+    source.write_bytes(b'legacy session must not leak')
+    repo = Repository(Store('sqlite://'))
+    key = 'outputs/job/isolated.mp4'
+    sha = hashlib.sha256(source.read_bytes()).hexdigest()
+    key_hash = hashlib.sha256(key.encode()).hexdigest()
+    legacy_session_id = hashlib.sha256(f'upload:u:{key_hash}:{sha}'.encode()).hexdigest()
+    from app.security import encrypt_secret
+
+    repo.create(
+        'files', 'u', {
+            'kind': 'drive_upload_session', 'state': 'uploading',
+            'encrypted_session': encrypt_secret(
+                'https://www.googleapis.com/upload/drive/v3/files?upload_id=legacy'
+            ),
+            'size': source.stat().st_size, 'sha256': sha, 'key_hash': key_hash,
+        }, record_id=legacy_session_id,
+    )
+    calls = []
+
+    def handler(request):
+        calls.append(request.method)
+        return httpx.Response(500)
+
+    storage = storage_for(repo, source, handler, 'account-b')
+    with pytest.raises(DriveError):
+        storage.put_file(key, source, 'video/mp4')
+    assert calls == ['POST']
 
 
 def test_file_upload_recovers_persisted_session_after_interruption(tmp_path):

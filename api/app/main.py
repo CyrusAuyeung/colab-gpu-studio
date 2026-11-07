@@ -20,6 +20,7 @@ from PIL import Image
 from pydantic import BaseModel, Field
 
 from . import __version__
+from .account_routes import router as account_router
 from .admission import _drive, admit_job, repo_registry
 from .atelier_routes import router as atelier_router
 from .batch_routes import build_batch_router
@@ -33,8 +34,10 @@ from .gpu.google import GoogleError
 from .gpu.manifest import bind_parameters, resolve_parameters, validate_manifest
 from .gpu.rates import estimate as estimate_units
 from .gpu.rates import mode_param
+from .gpu.registry import Registry
 from .gpu.repository import Repository
 from .gpu.scheduler import Scheduler
+from .instance_routes import router as instance_router
 from .job_schemas import JobInput
 from .oauth_config_routes import router as oauth_config_router
 from .presenters import public_asset, public_job
@@ -106,7 +109,19 @@ def usage(st, owner):
 async def lifespan(app):
     if not getattr(app.state, "store", None):
         app.state.store = Store(settings.database_url)
-    Repository(app.state.store)
+    from .gpu.instances import InstanceService
+    from .gpu.workbench import WorkbenchService
+
+    app.state.repo = Repository(app.state.store)
+    app.state.instance_service = InstanceService(app.state.repo, config=GpuConfig.from_env())
+
+    def admit_workbench(owner, body, key, *, instance=None):
+        parsed = JobInput.model_validate(body)
+        return admit_job(app.state.store, {"id": owner}, parsed.model_dump(), key)
+
+    app.state.workbench_service = WorkbenchService(
+        repo=app.state.repo, registry=Registry(app.state.repo), admit_job=admit_workbench
+    )
     settings.data_dir.mkdir(parents=True, exist_ok=True)
     yield
 
@@ -814,6 +829,8 @@ def agent_invoke(body: dict, request: Request, st=Depends(get_store)):
 
 if os.getenv("STUDIO_ATELIER_ENABLED", "0").strip().lower() in {"1", "true"}:
     app.include_router(atelier_router)
+app.include_router(account_router)
+app.include_router(instance_router)
 app.include_router(compute_router)
 app.include_router(review_router)
 app.include_router(oauth_config_router)

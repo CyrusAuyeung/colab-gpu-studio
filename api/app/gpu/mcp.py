@@ -237,6 +237,7 @@ class MCPGPUExecutor:
         store,
         owner_id: str,
         *,
+        account_id: str | None = None,
         google: GoogleService | None = None,
         client: httpx.Client | None = None,
         endpoint: str = MCP_ENDPOINT,
@@ -247,10 +248,10 @@ class MCPGPUExecutor:
             raise MCPError("MCPGPUExecutor需要Repository和owner_id")
         self.artifact_store = artifact_store
         self.store = store
-        self.owner_id = owner_id
+        self.owner_id, self.account_id = owner_id, account_id
         self.client = client or httpx.Client(timeout=httpx.Timeout(timeout), follow_redirects=False)
         self._owns_client = client is None
-        self.google = google or GoogleService(store, owner_id, client=self.client)
+        self.google = google or GoogleService(store, owner_id, account_id=account_id, client=self.client)
         self.endpoint = endpoint.rstrip("/")
         self.timeout = timeout
         if self.endpoint != MCP_ENDPOINT:

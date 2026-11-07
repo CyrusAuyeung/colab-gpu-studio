@@ -2,6 +2,8 @@ import { useState } from 'react';
 import { Cpu, Layers, Monitor, Cloud, HardDrive, Leaf, Boxes, Sparkles, ChevronDown, Info, Square, Search } from 'lucide-react';
 import type { ComputeSpec, GpuSettings, GpuUsage } from '../lib/gpu-api';
 import { ComputeSpecs } from '../components/ComputeSpecs';
+import { InstanceCenter } from '../components/InstanceCenter';
+import type { GpuInstance } from '../components/AccountDirectory';
 import { Card } from '../components/ui';
 import { STRATEGIES } from '../lib/labels';
 import styles from '../gpu.module.css';
@@ -10,12 +12,16 @@ import { cuNumber, shown } from '../lib/ui-helpers';
 const STRATEGY_ICON = { save: Leaf, batch: Boxes, smart: Sparkles } as const;
 
 export function ComputePage({
-  settings, usage, onStop, onCheck, loadingStop, loadingCheck, specs = [], specsNote = '', error = '',
+  settings, usage, instances = [], onStop, onCheck, onContinue, onOpenWorkbench, onRefreshInstances, loadingStop, loadingCheck, specs = [], specsNote = '', error = '',
 }: {
   settings: GpuSettings | null;
   usage: GpuUsage | null;
+  instances?: GpuInstance[];
   onStop?: () => void;
   onCheck?: () => void;
+  onContinue?: (instance: GpuInstance) => void;
+  onOpenWorkbench?: (instance: GpuInstance) => void;
+  onRefreshInstances?: () => void;
   loadingStop?: boolean;
   loadingCheck?: boolean;
   specs?: ComputeSpec[];
@@ -73,6 +79,8 @@ export function ComputePage({
           })}
         </div>
       </Card>
+
+      <InstanceCenter instances={instances} onContinue={onContinue} onOpenWorkbench={onOpenWorkbench} onRefresh={onRefreshInstances} />
 
       <div className={styles.note}><Info size={16} strokeWidth={1.6} aria-hidden /><span>{realEnabled ? '用量数据来自站内记录，可能与 Google 账单略有出入。' : '模拟模式的数据仅供演示，不代表真实账单。'}</span></div>
 

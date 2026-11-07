@@ -36,6 +36,8 @@ class GpuWorkflowRow(CommonMixin, Base):
 
 class GpuJobRow(CommonMixin, Base):
     __tablename__ = "gpu_jobs"
+    account_id: Mapped[str | None] = mapped_column(String(64), index=True, nullable=True)
+    instance_id: Mapped[str | None] = mapped_column(String(64), index=True, nullable=True)
     idempotency_key: Mapped[str] = mapped_column(String(255), nullable=False)
     body_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     __table_args__ = (UniqueConstraint("owner_id", "idempotency_key", name="uq_gpu_jobs_owner_idempotency"),)
@@ -50,10 +52,14 @@ class GpuBatchRow(CommonMixin, Base):
 
 class GpuExecutionRow(CommonMixin, Base):
     __tablename__ = "gpu_executions"
+    account_id: Mapped[str | None] = mapped_column(String(64), index=True, nullable=True)
+    instance_id: Mapped[str | None] = mapped_column(String(64), index=True, nullable=True)
 
 
 class GpuLeaseRow(CommonMixin, Base):
     __tablename__ = "gpu_leases"
+    account_id: Mapped[str | None] = mapped_column(String(64), index=True, nullable=True)
+    instance_id: Mapped[str | None] = mapped_column(String(64), index=True, nullable=True)
 
 
 class GpuEventRow(CommonMixin, Base):
@@ -74,6 +80,37 @@ class GpuFileRow(CommonMixin, Base):
 
 class GpuCredentialRow(CommonMixin, Base):
     __tablename__ = "gpu_credentials"
+    account_id: Mapped[str | None] = mapped_column(String(64), index=True, nullable=True)
+
+
+class GpuAccountRow(CommonMixin, Base):
+    __tablename__ = "gpu_accounts"
+
+
+class GpuInstanceRow(CommonMixin, Base):
+    __tablename__ = "gpu_instances"
+    account_id: Mapped[str | None] = mapped_column(String(64), index=True, nullable=True)
+    current_job_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    __table_args__ = (
+        UniqueConstraint("owner_id", "current_job_id", name="uq_gpu_instances_owner_current_job"),
+    )
+
+
+class GpuInstanceUsageSegmentRow(CommonMixin, Base):
+    __tablename__ = "gpu_instance_usage_segments"
+    account_id: Mapped[str | None] = mapped_column(String(64), index=True, nullable=True)
+    instance_id: Mapped[str | None] = mapped_column(String(64), index=True, nullable=True)
+
+
+class GpuAllocationCursorRow(CommonMixin, Base):
+    __tablename__ = "gpu_allocation_cursors"
+    account_id: Mapped[str | None] = mapped_column(String(64), index=True, nullable=True)
+
+
+class GpuOperationRow(CommonMixin, Base):
+    __tablename__ = "gpu_operations"
+    account_id: Mapped[str | None] = mapped_column(String(64), index=True, nullable=True)
+    instance_id: Mapped[str | None] = mapped_column(String(64), index=True, nullable=True)
 
 
 _GPU_MODELS = {
@@ -88,6 +125,11 @@ _GPU_MODELS = {
     "usage": GpuUsageRow,
     "files": GpuFileRow,
     "credentials": GpuCredentialRow,
+    "accounts": GpuAccountRow,
+    "instances": GpuInstanceRow,
+    "instance_usage_segments": GpuInstanceUsageSegmentRow,
+    "allocation_cursors": GpuAllocationCursorRow,
+    "operations": GpuOperationRow,
 }
 _GPU_TABLES = [model.__table__ for model in _GPU_MODELS.values()]
 for _kind, _model in _GPU_MODELS.items():
@@ -118,6 +160,31 @@ def ensure_schema(store: Store) -> None:
                                 "CREATE UNIQUE INDEX IF NOT EXISTS uq_gpu_workflows_owner_key_version ON gpu_workflows (owner_id, workflow_key, workflow_version)"
                             )
                         )
+                    for table, column_specs in {
+                        "gpu_jobs": {"account_id": "VARCHAR(64)", "instance_id": "VARCHAR(64)"},
+                        "gpu_executions": {"account_id": "VARCHAR(64)", "instance_id": "VARCHAR(64)"},
+                        "gpu_leases": {"account_id": "VARCHAR(64)", "instance_id": "VARCHAR(64)"},
+                        "gpu_credentials": {"account_id": "VARCHAR(64)"},
+                    }.items():
+                        existing = {column["name"] for column in inspect(store.engine).get_columns(table)}
+                        for column, column_type in column_specs.items():
+                            if column not in existing:
+                                connection.execute(
+                                    text(f"ALTER TABLE {table} ADD COLUMN {column} {column_type}")
+                                )
+                        for column in column_specs:
+                            connection.execute(
+                                text(
+                                    f"CREATE INDEX IF NOT EXISTS ix_{table}_{column}_v020 "
+                                    f"ON {table} ({column})"
+                                )
+                            )
+                    connection.execute(
+                        text(
+                            "CREATE UNIQUE INDEX IF NOT EXISTS uq_gpu_instances_owner_current_job "
+                            "ON gpu_instances (owner_id, current_job_id)"
+                        )
+                    )
             return
         except OperationalError:
             if attempt == 5:
@@ -213,6 +280,9 @@ class Repository:
             "created_at": utcnow(),
             "updated_at": utcnow(),
         }
+        for field in ("account_id", "instance_id", "current_job_id"):
+            if hasattr(model, field) and field in payload:
+                kwargs[field] = payload[field]
         if model is GpuWorkflowRow:
             kwargs.update(workflow_key=workflow_key, workflow_version=str(workflow_version))
         if model is GpuJobRow:
@@ -263,6 +333,9 @@ class Repository:
                 raise ValueError("已发布workflow版本不可覆写")
             changes = copy.deepcopy(dict(patch))
             row.data = {**(row.data or {}), **changes}
+            for field in ("account_id", "instance_id", "current_job_id"):
+                if hasattr(model, field) and field in changes:
+                    setattr(row, field, changes[field])
             if "state" in changes:
                 row.state = changes["state"]
             if "project_id" in changes:

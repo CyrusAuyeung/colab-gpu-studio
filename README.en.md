@@ -1,16 +1,16 @@
 **English** | [简体中文](README.md)
 
-> Current version: 0.1.31-dev.8. Deployed, with real Colab GPU support available (batch/lease handoff and reuse of restored models on the same machine). See the [changelog](更新说明_main_2026-11-05.md) for changes. Offline/Mock acceptance documents remain in docs/; see the [offline implementation notes](docs/OFFLINE_IMPLEMENTATION.md).
+> Current version: 0.2.0. Supports Google multi-account directory, Instance Center, Retain lifecycle mode, and controlled workbench. See [docs/RELEASE_NOTES_0.2.0.md](docs/RELEASE_NOTES_0.2.0.md) and [changelog](更新说明_main_2026-11-05.md) for changes. Offline/Mock acceptance documents remain in docs/; see the [offline implementation notes](docs/OFFLINE_IMPLEMENTATION.md).
 
 # Colab GPU Studio
 
 A personal AI workspace that lets you run ComfyUI on Colab GPUs from your phone, for image generation and H3 video.
 
-The frontend is a React single-page app optimized for mobile touch controls, and the backend uses FastAPI. Your website, task queue, and past creations normally stay on your own VPS, without occupying a GPU. Only when you click “Generate” does the backend request a GPU from Google Colab. Once the job is done, it saves the results back and **immediately destroys the runtime, so your compute units (CU) are not wasted on an idle GPU**.
+The frontend is a React single-page app optimized for mobile touch controls, and the backend uses FastAPI. Your website, task queue, and past creations normally stay on your own VPS, without occupying a GPU. Only when you click “Generate” does the backend request a GPU from Google Colab. Once the job is done, it saves the results back and **immediately destroys the runtime by default (or keeps it briefly when Retain mode is selected), so your compute units (CU) are not wasted on an idle GPU**.
 
 ## Downloads and Online Demo
 
-- **Download the full version**: [0.1.31-dev.8 multi-platform release](https://github.com/TizenryA/colab-gpu-studio/releases/tag/v0.1.31-dev.8). See the release asset descriptions for installation instructions and the scope of verification on each platform.
+- **Download the full version**: [0.2.0 multi-platform release](https://github.com/TizenryA/colab-gpu-studio/releases/tag/v0.2.0). See the release asset descriptions for installation instructions and the scope of verification on each platform.
 - **Read-only UI demo**: [Open the Cloudflare Workers demo](https://gpu-colab-studio-demo.tizenry.tech). Public demo password: `demo-readonly`.
 - The demo uses the **original 0.1.31-dev.8 frontend** with a separate Mock data snapshot. It does not connect to the production site, Google, or a real GPU, and does not consume CU. Generation, uploads, edits, deletion, and authorization are unavailable; download and self-host the full version for complete functionality.
 - [Demo details and more screenshots](docs/DEMO.md). The screenshots below were captured in a real browser on the live demo site; they are not design mockups.

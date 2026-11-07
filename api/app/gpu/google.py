@@ -44,6 +44,8 @@ _PURPOSES = {
     "drive": "https://www.googleapis.com/auth/drive.file",
 }
 _STATE_CONSUME_LOCK = threading.Lock()
+_REFRESH_FALLBACK_LOCKS: dict[str, threading.Lock] = {}
+_REFRESH_FALLBACK_GUARD = threading.Lock()
 
 
 def _safe_id(value: str) -> str:
@@ -67,12 +69,16 @@ class GoogleService:
         store,
         owner_id: str | None,
         *,
+        account_id: str | None = None,
         client: httpx.Client | None = None,
         clock=_now,
         state_ttl_seconds: int = 600,
     ):
         self.store = store
         self.owner_id = owner_id
+        # None is the legacy single-account slot. Explicit account ids never
+        # fall back to that slot or to another account.
+        self.account_id = account_id
         self.client = client or httpx.Client(timeout=httpx.Timeout(10.0), follow_redirects=False)
         self._owns_client = client is None
         self.clock = clock
@@ -82,7 +88,25 @@ class GoogleService:
     def callback_uri() -> str:
         return str(getattr(settings, "site_url", "")).rstrip("/") + "/api/gpu/auth/google/callback"
 
-    def _client_config(self, owner_id: str | None = None) -> dict | None:
+    def _account_matches(self, row: dict, account_id: str | None = None) -> bool:
+        account = self.account_id if account_id is None else account_id
+        row_account = row.get("account_id")
+        try:
+            from .accounts import AccountService
+
+            owner = row.get("owner_id") or self.owner_id
+            legacy_default = owner and AccountService.default_account_id(owner)
+        except (AttributeError, TypeError, ValueError):
+            legacy_default = None
+        if account is None:
+            return row_account in (None, "", legacy_default)
+        if row_account == account:
+            return True
+        # The deterministic migrated default account is the same identity as
+        # the old unscoped slot.  Other explicit accounts never use it.
+        return account == legacy_default and row_account in (None, "")
+
+    def _client_config(self, owner_id: str | None = None, account_id: str | None = None) -> dict | None:
         owner = self.owner_id if owner_id is None else owner_id
         if not owner:
             return None
@@ -90,6 +114,7 @@ class GoogleService:
             row for row in self._list("credentials", owner)
             if row.get("provider") == "google"
             and row.get("purpose") == "oauth_client_config"
+            and self._account_matches(row, account_id)
             and not row.get("revoked")
         ]
         if not rows:
@@ -101,8 +126,8 @@ class GoogleService:
             raise GoogleConfigurationError("Google OAuth配置不可用") from exc
         return {"client_id": str(row.get("client_id", "")).strip(), "client_secret": secret, "id": row.get("id")}
 
-    def _config(self, owner_id: str | None = None) -> tuple[str, str, str]:
-        database = self._client_config(owner_id)
+    def _config(self, owner_id: str | None = None, account_id: str | None = None) -> tuple[str, str, str]:
+        database = self._client_config(owner_id, account_id)
         if database:
             client_id, client_secret = database["client_id"], database["client_secret"]
         else:
@@ -138,7 +163,7 @@ class GoogleService:
         except (AttributeError, KeyError, TypeError, ValueError):
             return False
 
-    def _credential(self, purpose: str, owner_id: str | None = None) -> dict | None:
+    def _credential(self, purpose: str, owner_id: str | None = None, account_id: str | None = None) -> dict | None:
         owner = self.owner_id if owner_id is None else owner_id
         if not owner:
             return None
@@ -148,6 +173,7 @@ class GoogleService:
             if r.get("purpose") == purpose
             and r.get("provider", "google") == "google"
             and not r.get("revoked")
+            and self._account_matches(r, account_id)
         ]
         return rows[0] if rows else None
 
@@ -155,7 +181,7 @@ class GoogleService:
         configured = all(self._config_value())
         result: dict[str, dict[str, Any]] = {}
         for purpose in _PURPOSES:
-            credential = self._credential(purpose)
+            credential = self._credential(purpose, account_id=self.account_id)
             scope_ok = bool(credential and self._scope_sufficient(purpose, credential.get("scope")))
             connected = bool(credential and credential.get("encrypted_refresh_token") and scope_ok)
             result[purpose] = {
@@ -181,7 +207,7 @@ class GoogleService:
 
     def _config_value(self) -> tuple[str, str, str]:
         try:
-            return self._config(self.owner_id)
+            return self._config(self.owner_id, self.account_id)
         except GoogleConfigurationError:
             return "", "", self.callback_uri()
 
@@ -209,6 +235,7 @@ class GoogleService:
                 "provider": "google",
                 "purpose": "_oauth_state",
                 "oauth_purpose": purpose,
+                **({"account_id": self.account_id} if self.account_id is not None else {}),
                 "state_hash": _safe_id(state),
                 "encrypted_code_verifier": encrypt_secret(verifier),
                 "expires_at": self.clock() + self.state_ttl_seconds,
@@ -269,7 +296,7 @@ class GoogleService:
         row = self._take_state(state)
         # The callback starts without an owner.  The consumed state is the
         # only authority for selecting the owner's encrypted client config.
-        client_id, client_secret, redirect = self._config(row.get("owner_id"))
+        client_id, client_secret, redirect = self._config(row.get("owner_id"), row.get("account_id"))
         try:
             verifier = decrypt_secret(row["encrypted_code_verifier"])
             response = self.client.post(
@@ -296,7 +323,7 @@ class GoogleService:
                 raise ValueError
         except (ValueError, TypeError, AttributeError):
             raise GoogleOAuthError("Google OAuth响应无效")
-        old = self._credential(row.get("oauth_purpose"), row.get("owner_id"))
+        old = self._credential(row.get("oauth_purpose"), row.get("owner_id"), row.get("account_id"))
         if not refresh and old:
             try:
                 refresh = decrypt_secret(old["encrypted_refresh_token"])
@@ -312,6 +339,7 @@ class GoogleService:
             "expires_at": self.clock() + max(0, expires_in - 60),
             "scope": payload.get("scope", _PURPOSES[row["oauth_purpose"]]),
             "token_type": payload.get("token_type", "Bearer"),
+            **({"account_id": row.get("account_id")} if row.get("account_id") is not None else {}),
         }
         if old:
             self._update("credentials", old["id"], data, row.get("owner_id"))
@@ -319,6 +347,8 @@ class GoogleService:
             self._create("credentials", row["owner_id"], data)
         connected = self._scope_sufficient(row["oauth_purpose"], data["scope"])
         result = {"purpose": row["oauth_purpose"], "connected": connected, "owner_id": row["owner_id"]}
+        if row.get("account_id") is not None:
+            result["account_id"] = row["account_id"]
         if not connected:
             result["message"] = "Google权限不足，请重新授权"
         return result
@@ -326,7 +356,7 @@ class GoogleService:
     def access_token(self, purpose: str) -> str:
         if purpose not in _PURPOSES:
             raise ValueError("Google OAuth purpose无效")
-        credential = self._credential(purpose)
+        credential = self._credential(purpose, account_id=self.account_id)
         if not credential:
             raise GoogleOAuthError("Google OAuth未连接，真实GPU能力已关闭")
         if not self._scope_sufficient(purpose, credential.get("scope")):
@@ -379,7 +409,7 @@ class GoogleService:
     def disconnect(self, purpose: str) -> bool:
         if purpose not in _PURPOSES:
             raise ValueError("Google OAuth purpose无效")
-        credential = self._credential(purpose)
+        credential = self._credential(purpose, account_id=self.account_id)
         if not credential:
             return False
         remote_confirmed = False

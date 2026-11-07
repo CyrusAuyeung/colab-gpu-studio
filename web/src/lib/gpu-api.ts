@@ -1,3 +1,37 @@
+import type {
+  AccountRuntime,
+  GoogleAccount,
+  GoogleAccountCreateRequest,
+  GoogleAccountUpdateRequest,
+  GoogleAuthPurpose,
+  GpuExecutionPolicyV020,
+  GpuInstance,
+  GpuInstanceFilters,
+  GpuJobRequestV020,
+  InstanceRetentionRequest,
+  RetentionMode,
+  Workbench,
+  WorkbenchAction,
+  WorkbenchActionRequest,
+  WorkbenchActionResult,
+} from './v020-types';
+
+export type {
+  AccountRuntime,
+  GoogleAccount,
+  GoogleAccountCreateRequest,
+  GoogleAccountUpdateRequest,
+  GoogleAuthPurpose,
+  GpuInstance,
+  GpuInstanceFilters,
+  InstanceRetentionRequest,
+  RetentionMode,
+  Workbench,
+  WorkbenchAction,
+  WorkbenchActionRequest,
+  WorkbenchActionResult,
+} from './v020-types';
+
 export type Provider = 'mock' | 'colab';
 export type ParamType = 'string' | 'text' | 'integer' | 'number' | 'boolean' | 'image' | 'video' | 'file' | string;
 
@@ -9,8 +43,44 @@ export interface GpuParameter { id?: string; key?: string; name?: string; label?
 export interface GpuManifest { model_id?: string; title?: string; description?: string; parameters?: GpuParameter[] | Record<string, Omit<GpuParameter, 'id'>>; [key: string]: unknown; }
 export interface GpuWorkflow { id: string; workflow_key: string; workflow_version: string | number; model_id: string; state: string; active?: boolean; manifest?: GpuManifest; title?: string; description?: string; [key: string]: unknown; }
 export interface GpuPreset { id: string; name: string; workflow_version_id: string; overrides: Record<string, unknown>; [key: string]: unknown; }
-export interface GpuJobRequest { project_id: string; model_id: string; workflow_key: string; workflow_version: string | number; params: Record<string, unknown>; asset_ids: string[]; preset_id?: string; execution_policy: { provider: Provider; max_runtime_minutes: number; shutdown_after_job: true; idle_grace_minutes: 0; }; }
-export interface GpuJob { id: string; job_id?: string; project_id: string; model_id?: string; workflow_key?: string; workflow_version?: string | number; state?: string; provider?: Provider; params?: Record<string, unknown>; resolved_params?: Record<string, unknown>; asset_ids?: string[]; output_asset_ids?: string[]; error?: string; error_message?: string; message?: string; progress?: number; idempotency_key?: string; estimated_units?: number | null; actual_units?: number | null; unit_rate?: number | null; created_at?: string; updated_at?: string; events?: GpuEvent[]; [key: string]: unknown; }
+export type GpuExecutionPolicy = GpuExecutionPolicyV020;
+export interface GpuJobRequest extends GpuJobRequestV020 { }
+export interface GpuJob {
+  id: string;
+  job_id?: string;
+  project_id: string;
+  model_id?: string;
+  workflow_key?: string;
+  workflow_version?: string | number;
+  state?: string;
+  provider?: Provider;
+  params?: Record<string, unknown>;
+  resolved_params?: Record<string, unknown>;
+  asset_ids?: string[];
+  output_asset_ids?: string[];
+  error?: string;
+  error_message?: string;
+  message?: string;
+  progress?: number;
+  idempotency_key?: string;
+  estimated_units?: number | null;
+  actual_units?: number | null;
+  actual_cu?: number | null;
+  unit_rate?: number | null;
+  account_id?: string | null;
+  account_alias_snapshot?: string | null;
+  instance_id?: string | null;
+  instance_label?: string | null;
+  instance_state?: string | null;
+  gpu_reported?: string | null;
+  retained_until?: string | null;
+  runtime_deleted?: boolean | null;
+  stage?: string | null;
+  created_at?: string;
+  updated_at?: string;
+  events?: GpuEvent[];
+  [key: string]: unknown;
+}
 export interface GpuEvent { id?: string; state?: string; event_type?: string; message?: string; progress?: number; created_at?: string; payload?: Record<string, unknown>; [key: string]: unknown; }
 export interface GalleryAsset { id: string; project_id: string; mime: string; filename?: string; thumbnail_url?: string; download_url?: string; favorite?: boolean; gpu_job_id?: string; source_job_id?: string; mock?: boolean; metadata?: Record<string, unknown>; [key: string]: unknown; }
 export interface GpuUsage { estimated_units?: number | null; actual_units?: number | null; unit_rate?: number | null; daily_limit?: number | null; monthly_limit?: number | null; max_runtime_minutes?: number | null; active_runtimes?: number | null; [key: string]: unknown; }
@@ -71,6 +141,11 @@ export async function apiFetch<T>(path: string, init: RequestInit = {}): Promise
   return unwrapGpuResponse<T>(body as ApiEnvelope<T> | T);
 }
 const post = (body: unknown): RequestInit => ({ method: 'POST', body: JSON.stringify(body) });
+const write = (method: 'POST' | 'PATCH', body: unknown, idempotencyKey: string): RequestInit => ({
+  method,
+  headers: { 'Idempotency-Key': idempotencyKey },
+  body: JSON.stringify(body),
+});
 export function apiMessage(error: unknown): string { return error instanceof Error ? error.message : '网络连接失败，请稍后重试'; }
 
 export async function login(password: string): Promise<string> {
@@ -108,6 +183,60 @@ export async function startGoogleAuth(purpose: 'drive' | 'colab'): Promise<strin
   return result.authorization_url;
 }
 export const disconnectGoogle = (purpose: 'drive' | 'colab') => apiFetch<Record<string, unknown>>('/api/gpu/auth/google/disconnect', post({ purpose }));
+
+// v0.2.0 account/instance/workbench contract. All mutating calls receive the
+// stable idempotency key from the caller; the client never generates one.
+export const getGoogleAccounts = () => apiFetch<GoogleAccount[]>('/api/gpu/accounts');
+export const createGoogleAccount = (body: GoogleAccountCreateRequest, idempotencyKey: string) =>
+  apiFetch<GoogleAccount>('/api/gpu/accounts', write('POST', body, idempotencyKey));
+export const updateGoogleAccount = (accountId: string, body: GoogleAccountUpdateRequest, idempotencyKey: string) =>
+  apiFetch<GoogleAccount>(`/api/gpu/accounts/${encodeURIComponent(accountId)}`, write('PATCH', body, idempotencyKey));
+export const disconnectGoogleAccount = (accountId: string, idempotencyKey: string) =>
+  apiFetch<GoogleAccount>(`/api/gpu/accounts/${encodeURIComponent(accountId)}/disconnect`, write('POST', {}, idempotencyKey));
+export const startGoogleAccountAuth = (accountId: string, purpose: GoogleAuthPurpose, idempotencyKey: string) =>
+  apiFetch<{ authorization_url: string; state?: string }>(
+    `/api/gpu/accounts/${encodeURIComponent(accountId)}/auth/${purpose}/start`,
+    write('POST', { purpose }, idempotencyKey),
+  );
+export const getAccountRuntimes = (accountId: string) =>
+  apiFetch<AccountRuntime[]>(`/api/gpu/accounts/${encodeURIComponent(accountId)}/runtimes`);
+
+export const listGpuInstances = (filters: GpuInstanceFilters = {}) => {
+  const query = new URLSearchParams();
+  if (filters.state) query.set('state', filters.state);
+  if (filters.account_id) query.set('account_id', filters.account_id);
+  if (filters.provider) query.set('provider', filters.provider);
+  const suffix = query.toString() ? `?${query.toString()}` : '';
+  return apiFetch<GpuInstance[]>(`/api/gpu/instances${suffix}`);
+};
+export const getGpuInstance = (instanceId: string) =>
+  apiFetch<GpuInstance>(`/api/gpu/instances/${encodeURIComponent(instanceId)}`);
+export const getInstanceJobs = (instanceId: string) =>
+  apiFetch<GpuJob[]>(`/api/gpu/instances/${encodeURIComponent(instanceId)}/jobs`);
+export const getInstanceEvents = (instanceId: string) =>
+  apiFetch<GpuEvent[]>(`/api/gpu/instances/${encodeURIComponent(instanceId)}/events`);
+export const setInstanceRetention = (instanceId: string, body: InstanceRetentionRequest, idempotencyKey: string) =>
+  apiFetch<GpuInstance>(`/api/gpu/instances/${encodeURIComponent(instanceId)}/retention`, write('PATCH', body, idempotencyKey));
+export const stopInstance = (instanceId: string, idempotencyKey: string) =>
+  apiFetch<GpuInstance>(`/api/gpu/instances/${encodeURIComponent(instanceId)}/stop`, write('POST', { confirmed: true }, idempotencyKey));
+export const getWorkbench = (instanceId: string) =>
+  apiFetch<Workbench>(`/api/gpu/instances/${encodeURIComponent(instanceId)}/workbench`);
+export const workbenchAction = (instanceId: string, action: WorkbenchAction, params: Record<string, unknown> = {}, idempotencyKey: string) =>
+  apiFetch<WorkbenchActionResult>(
+    `/api/gpu/instances/${encodeURIComponent(instanceId)}/workbench/actions`,
+    write('POST', { ...params, action }, idempotencyKey),
+  );
+
+// Short aliases keep the domain names usable from settings/compute pages.
+export const getAccounts = getGoogleAccounts;
+export const createAccount = createGoogleAccount;
+export const updateAccount = updateGoogleAccount;
+export const disconnectAccount = disconnectGoogleAccount;
+export const startAccountAuth = startGoogleAccountAuth;
+export const listInstances = listGpuInstances;
+export const getInstance = getGpuInstance;
+export const listInstanceJobs = getInstanceJobs;
+export const listInstanceEvents = getInstanceEvents;
 export const stopGpuCompute = () => apiFetch<Record<string, unknown>>('/api/gpu/admin/compute/stop', post({}));
 export const smokeTestGpuWorkflow = (id: string) => apiFetch<GpuWorkflow>(`/api/gpu/workflows/${encodeURIComponent(id)}/smoke-test`, post({}));
 
@@ -132,8 +261,8 @@ export const getGoogleClientConfig = () => apiFetch<GoogleClientConfig>('/api/gp
 export const saveGoogleClientConfig = (body: {client_id?: string; client_secret?: string; client_json?: Record<string, unknown>; confirmed: true}) => apiFetch<GoogleClientConfig>('/api/gpu/auth/google/config', post(body));
 export const getReferenceAssets = (projectId: string) => apiFetch<GalleryAsset[]>(`/api/assets?project_id=${encodeURIComponent(projectId)}`);
 
-export function createGpuBatch(jobs: GpuJobRequest[], mode: 'save'|'smart'|'batch', idleSeconds: number, idempotencyKey: string) {
-  return apiFetch<{id:string}>('/api/gpu/batches', {method:'POST',headers:{'Idempotency-Key':idempotencyKey},body:JSON.stringify({jobs,mode,idle_seconds:idleSeconds})});
+export function createGpuBatch(jobs: GpuJobRequest[], mode: 'save'|'smart'|'batch'|'retain', idleSeconds: number, idempotencyKey: string) {
+  return apiFetch<{id:string}>('/api/gpu/batches', {method:'POST',headers:{'Idempotency-Key':idempotencyKey},body:JSON.stringify({jobs,mode,idle_seconds:Math.min(300, Math.max(0, idleSeconds))})});
 }
 
 export const retryGpuAttempt = (id: string, key: string) => apiFetch<GpuJob>(`/api/gpu/jobs/${encodeURIComponent(id)}/attempts`, { method: "POST", headers: { "Idempotency-Key": key }, body: JSON.stringify({}) });

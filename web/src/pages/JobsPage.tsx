@@ -12,7 +12,7 @@ const FAILED = ['failed', 'failed_final', 'cancelled', 'cancelled_local', 'block
 type Filter = 'all' | 'running' | 'completed' | string;
 
 export function TasksPanel({
-  jobs, error, refreshing, onRefresh, onCancel, onRetry, onDetail,
+  jobs, error, refreshing, onRefresh, onCancel, onRetry, onDetail, onRetain, onInstance,
 }: {
   jobs: GpuJob[];
   error: string;
@@ -21,6 +21,8 @@ export function TasksPanel({
   onCancel: (id: string) => void;
   onRetry: (id: string) => void;
   onDetail: (job: GpuJob) => void;
+  onRetain?: (job: GpuJob) => void;
+  onInstance?: (job: GpuJob) => void;
 }) {
   const [filter, setFilter] = useState<Filter>('all');
   const [query, setQuery] = useState('');
@@ -28,13 +30,22 @@ export function TasksPanel({
 
   const stateOf = (job: GpuJob) => String(job.state || 'queued').toLowerCase();
   const isActive = (job: GpuJob) => RUNNING.includes(stateOf(job)) || WAITING.includes(stateOf(job));
+  const uniqueJobs = useMemo(() => {
+    const seen = new Set<string>();
+    return jobs.filter((job, index) => {
+      const key = String(job.id || job.job_id || `job-${index}`);
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  }, [jobs]);
 
   const counts = useMemo(() => ({
-    running: jobs.filter(isActive).length,
-    completed: jobs.filter((j) => DONE.includes(String(j.state || '').toLowerCase())).length,
-  }), [jobs]);
+    running: uniqueJobs.filter(isActive).length,
+    completed: uniqueJobs.filter((j) => DONE.includes(String(j.state || '').toLowerCase())).length,
+  }), [uniqueJobs]);
 
-  const filtered = jobs.filter((job) => {
+  const filtered = uniqueJobs.filter((job) => {
     const s = stateOf(job);
     if (filter === 'running' && !isActive(job)) return false;
     if (filter === 'completed' && !DONE.includes(s)) return false;
@@ -64,13 +75,13 @@ export function TasksPanel({
 
       <div className={styles.filterBar}>
         <div className={styles.chipRow}>
-          {chip('all', `全部 ${jobs.length}`)}
+          {chip('all', `全部 ${uniqueJobs.length}`)}
           {chip('running', `进行中 ${counts.running}`)}
           {chip('completed', `已完成 ${counts.completed}`)}
         </div>
         <select aria-label="按状态筛选" className={styles.miniSelect} value={['all', 'running', 'completed'].includes(filter) ? '' : filter} onChange={(e) => setFilter(e.target.value || 'all')}>
           <option value="">更多状态</option>
-          {[...new Set(jobs.map((job) => job.state || 'queued'))].map((state) => <option value={state} key={state}>{readableState(state)}</option>)}
+          {[...new Set(uniqueJobs.map((job) => job.state || 'queued'))].map((state) => <option value={state} key={state}>{readableState(state)}</option>)}
         </select>
       </div>
 
@@ -84,7 +95,8 @@ export function TasksPanel({
 
       {filtered.length ? (
         <div className={styles.list}>
-          {filtered.slice(0, limit).map((job) => {
+          {filtered.slice(0, limit).map((job, index) => {
+            const jobKey = String(job.id || job.job_id || `job-${index}`);
             const s = stateOf(job);
             const pct = progressPercent(job.progress);
             const done = DONE.includes(s);
@@ -95,9 +107,18 @@ export function TasksPanel({
             const thumb = done && job.output_asset_ids?.[0] && !video ? `/api/assets/${job.output_asset_ids[0]}/thumbnail` : '';
             const size = jobSize(job);
             const err = job.error_message || job.error;
+            const instanceId = String(job.instance_id || '');
+            const accountSnapshot = String(job.account_alias_snapshot || job.account_id || '');
+            const machineInfo = [
+              accountSnapshot ? `账号 ${accountSnapshot}` : '',
+              String(job.instance_label || instanceId.slice(0, 8)),
+              String(job.gpu_reported || 'GPU 未确认'),
+              readableState(String(job.instance_state || '未知')),
+            ].filter(Boolean).join(' · ');
+            const retained = Boolean(job.retained_until || String(job.lifecycle || '') === 'retain');
 
             return (
-              <article className={styles.jobCard} key={job.id}>
+              <article className={styles.jobCard} key={jobKey}>
                 <div className={styles.jobTop}>
                   <div className={styles.jobThumb}>
                     {thumb ? <img src={thumb} alt="" loading="lazy" /> : video ? <Film size={22} strokeWidth={1.4} aria-hidden /> : <ImageIcon size={22} strokeWidth={1.4} aria-hidden />}
@@ -111,6 +132,9 @@ export function TasksPanel({
                       {[video ? '视频' : '图片', size, job.provider === 'mock' ? '模拟' : job.provider === 'colab' ? 'Colab' : ''].filter(Boolean).join(' · ')}
                     </p>
                     <p className="muted small">创建于 {formatDateTime(job.created_at)}</p>
+                    {instanceId ? <button type="button" className={styles.linkButton} onClick={() => onInstance?.(job)}>{machineInfo}</button>
+                      : accountSnapshot ? <p className="muted small">{machineInfo} · 等待分配机器</p>
+                      : <p className="muted small">等待分配机器</p>}
                   </div>
                 </div>
 
@@ -127,6 +151,8 @@ export function TasksPanel({
 
                 <div className={styles.cardActions}>
                   <button className="button small" style={{ flex: 1 }} type="button" onClick={() => onDetail(job)}>查看详情</button>
+                  {instanceId && !retained && onRetain && <button className="button secondary small" type="button" onClick={() => onRetain(job)}>保留这台机器</button>}
+                  {retained && <span className="pill">已保留{job.retained_until ? `至 ${formatDateTime(String(job.retained_until))}` : ''}</span>}
                   {!terminalStates.has(s) ? (
                     <button className="button secondary small" style={{ flex: 1 }} type="button" onClick={() => onCancel(job.id)}>
                       <Square size={13} strokeWidth={1.8} aria-hidden />取消

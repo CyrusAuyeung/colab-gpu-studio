@@ -40,6 +40,16 @@ def public_job(job):
         "for_job_id",
         "prep_job_id",
         "awaiting_prep",
+        "requested_account_id",
+        "requested_instance_id",
+        "account_id",
+        "account_alias_snapshot",
+        "instance_id",
+        "instance_label",
+        "instance_state",
+        "gpu_reported",
+        "retained_until",
+        "selection_reason",
     }
     result = {k: v for k, v in job.items() if k in keys}
     result["job_id"] = job["id"]

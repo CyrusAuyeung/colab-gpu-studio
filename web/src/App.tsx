@@ -7,12 +7,15 @@ import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import { Sparkles, Zap, Image as ImageIcon, Cpu, Settings as SettingsIcon, Folder, ChevronDown, X, Plus, Check, Maximize2, Star, Download, Trash2, RotateCcw, Triangle } from 'lucide-react';
 import {
   apiMessage, assetUrl, cancelGpuJob, createGpuJob, createGpuBatch, createProject, deleteAsset, disconnectGoogle,
-  getGpuComputeSpecs, getGpuGallery, getGpuJob, getGpuJobs, getGpuModels,
+  apiFetch,
+  getGpuComputeSpecs, getGpuGallery, getGpuJob, getGpuJobs, getGpuModels, listGpuInstances,
   getGpuPresets, getReferenceAssets, getGpuSettings, getGpuUsage, getGpuWorkflowSchema, getGpuWorkflows, getProjects, importGpuWorkflow,
   isLoggedIn, login, publishGpuWorkflow, retryGpuJob, retryGpuAttempt, startGoogleAuth, stopGpuCompute, updateAsset, uploadAsset,
   validateGpuWorkflow, rollbackGpuWorkflow, saveGpuPreset, type ComputeSpec, type GalleryAsset, type GpuJob, type GpuPreset,
   type GpuManifest, type GpuModel, type GpuParameter, type GpuSettings, type GpuUsage, type GpuWorkflow, type Project, type Provider,
 } from './lib/gpu-api';
+import type { GpuAccount, GpuInstance } from './components/AccountDirectory';
+import type { RuntimeChoice } from './pages/CreatePage';
 import { GpuParamForm } from './components/GpuParamForm';
 import { ReferencePicker, referenceAssets, supportsReferences } from './components/ReferencePicker';
 import { GoogleOAuthSetup } from './components/GoogleOAuthSetup';
@@ -25,6 +28,20 @@ const terminalStates = new Set(['completed', 'succeeded', 'failed', 'failed_fina
 
 function record(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === 'object' && !Array.isArray(value));
+}
+
+function uniqueBy<T>(items: T[], keyOf: (item: T) => string): T[] {
+  const seen = new Set<string>();
+  return items.filter((item) => {
+    const key = keyOf(item);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function instanceIdOf(instance: Pick<GpuInstance, 'id' | 'instance_id'>): string {
+  return instance.id || instance.instance_id || '';
 }
 
 function parameterList(manifest: GpuManifest | null): GpuParameter[] {
@@ -252,7 +269,12 @@ export default function App() {
   const [runtime, setRuntime] = useState<Provider>('mock');
   const [maxRuntime, setMaxRuntime] = useState(30);
   const [batchCount,setBatchCount] = useState(1);
-  const [batchMode,setBatchMode] = useState<'save'|'smart'|'batch'>('save');
+  const [batchMode,setBatchMode] = useState<'save'|'smart'|'batch'|'retain'>('save');
+  const [runtimeChoice, setRuntimeChoice] = useState<RuntimeChoice>({ accountId: '', instanceId: '', lifecycle: 'save', retainIdleMinutes: 15 });
+  const [accounts, setAccounts] = useState<GpuAccount[]>([]);
+  const [instances, setInstances] = useState<GpuInstance[]>([]);
+  const [resourceError, setResourceError] = useState('');
+  const resourceRefresh = useRef<(() => void) | null>(null);
   const submitting = useRef(false);
   const [settings, setSettings] = useState<GpuSettings | null>(null);
   const [usage, setUsage] = useState<GpuUsage | null>(null);
@@ -270,6 +292,7 @@ export default function App() {
   const [refreshingJobs, setRefreshingJobs] = useState(false);
   const idempotencyKey = useRef('');
   const retryKeys = useRef<Record<string, string>>({});
+  const instanceRetentionKeys = useRef<Record<string, string>>({});
   const jobSequence = useRef(0);
   const draftReady = useRef('');
 
@@ -329,6 +352,31 @@ export default function App() {
     }).catch((cause) => alive && setError(apiMessage(cause)));
     return () => { alive = false; };
   }, [loggedIn, loginRefresh]);
+
+  useEffect(() => {
+    if (!loggedIn) return;
+    let alive = true;
+    const refreshResources = async () => {
+      try {
+        const [accountResult, instanceResult] = await Promise.all([
+          apiFetch<unknown>('/api/gpu/accounts'),
+          listGpuInstances(),
+        ]);
+        if (!alive) return;
+        const nextAccounts = (Array.isArray(accountResult) ? accountResult : record(accountResult) && Array.isArray(accountResult.data) ? accountResult.data : []) as GpuAccount[];
+        const nextInstances = instanceResult as unknown as GpuInstance[];
+        setAccounts(uniqueBy(nextAccounts, (account) => account.account_id));
+        setInstances(uniqueBy(nextInstances, (instance) => instanceIdOf(instance)));
+        setResourceError('');
+      } catch (cause) {
+        if (alive) setResourceError(`账号/实例：${apiMessage(cause)}`);
+      }
+    };
+    resourceRefresh.current = () => void refreshResources();
+    void refreshResources();
+    const timer = window.setInterval(() => void refreshResources(), 5000);
+    return () => { alive = false; resourceRefresh.current = null; window.clearInterval(timer); };
+  }, [loggedIn]);
 
   useEffect(() => {
     if (!modelId) return;
@@ -499,16 +547,18 @@ export default function App() {
         execution_policy: {
           provider: runtime,
           max_runtime_minutes: maxRuntime,
-          shutdown_after_job: true as const,
-          idle_grace_minutes: 0 as const,
+          allocation: runtimeChoice.instanceId ? 'existing' as const : 'auto' as const,
+          account_id: runtimeChoice.accountId || null,
+          instance_id: runtimeChoice.instanceId || null,
+          lifecycle: runtimeChoice.lifecycle,
+          retain_idle_minutes: runtimeChoice.retainIdleMinutes,
         },
       };
       if (runtime === 'mock' || batchCount > 1) {
-        // 真实 GPU 的多张任务走「批次」：同批共用一台机器（智能策略暂只支持模拟）
-        const mode = runtime === 'mock' ? batchMode : 'batch';
+        // 批次沿用用户选定的账号、实例与生命周期，不再静默改成 batch。
         await createGpuBatch(Array.from({length:batchCount},(_,index)=>({...body,
           params:{...body.params,...(typeof body.params.seed === 'number' && body.params.seed >= 0 ? {seed:body.params.seed+index} : {})}})),
-          mode,120,idempotencyKey.current);
+          runtimeChoice.lifecycle, runtimeChoice.retainIdleMinutes * 60, idempotencyKey.current);
       } else {
         await createGpuJob(body, idempotencyKey.current);
       }
@@ -625,7 +675,54 @@ export default function App() {
     await action('stop', async () => {
       await stopGpuCompute();
       setConfirm(null);
-      setError('已发出停止请求。');
+      setError('已发出取消任务请求；未自动释放没有任务的保留实例。');
+    });
+  }
+
+  function changeRuntimeChoice(next: RuntimeChoice) {
+    setRuntimeChoice(next);
+    setBatchMode(next.lifecycle);
+  }
+
+  function openInstanceWorkbench(instance: GpuInstance) {
+    const id = instanceIdOf(instance);
+    if (!id) return;
+    changeRuntimeChoice({ accountId: instance.account_id || null, instanceId: id, lifecycle: runtimeChoice.lifecycle, retainIdleMinutes: runtimeChoice.retainIdleMinutes });
+    setRuntime(instance.provider === 'mock' ? 'mock' : 'colab');
+    setTab('算力');
+  }
+
+  function continueInstance(instance: GpuInstance) {
+    const id = instanceIdOf(instance);
+    if (!id) return;
+    changeRuntimeChoice({ accountId: instance.account_id || null, instanceId: id, lifecycle: 'save', retainIdleMinutes: runtimeChoice.retainIdleMinutes });
+    setRuntime(instance.provider === 'mock' ? 'mock' : 'colab');
+    setTab('创作');
+  }
+
+  async function retainJob(job: GpuJob) {
+    const instanceId = String(job.instance_id || '');
+    if (!instanceId) { setJobError('该任务尚未分配实例，暂不能保留。'); return; }
+    await action('retain', async () => {
+      const operation = `retain:${instanceId}`;
+      const writeKey = instanceRetentionKeys.current[operation] ||= `retain:${instanceId}:${keyId()}`;
+      const updatedInstance = await apiFetch<GpuInstance>(`/api/gpu/instances/${encodeURIComponent(instanceId)}/retention`, {
+        method: 'PATCH', headers: { 'Idempotency-Key': writeKey },
+        body: JSON.stringify({ retention_mode: 'retain', idle_minutes: runtimeChoice.retainIdleMinutes }),
+      });
+      delete instanceRetentionKeys.current[operation];
+      setInstances((current) => {
+        const index = current.findIndex((item) => item.instance_id === updatedInstance.instance_id);
+        const resolvedIndex = index >= 0 ? index : current.findIndex((item) => instanceIdOf(item) === instanceIdOf(updatedInstance));
+        if (resolvedIndex < 0) return uniqueBy([updatedInstance, ...current], (instance) => instanceIdOf(instance));
+        const next = [...current];
+        next[resolvedIndex] = { ...next[resolvedIndex], ...updatedInstance, id: instanceIdOf(updatedInstance), instance_id: instanceIdOf(updatedInstance) };
+        return next;
+      });
+      setJobs((current) => current.map((item) => item.instance_id === instanceId
+        ? { ...item, lifecycle: 'retain', retained_until: updatedInstance.retained_until, instance_state: updatedInstance.state }
+        : item));
+      await refreshJobs();
     });
   }
 
@@ -724,6 +821,10 @@ export default function App() {
             setBatchCount={setBatchCount}
             batchMode={batchMode}
             setBatchMode={setBatchMode}
+            runtimeChoice={runtimeChoice}
+            accounts={accounts}
+            instances={instances}
+            onRuntimeChoiceChange={changeRuntimeChoice}
             loading={loading}
             error={error}
             onSubmit={() => setConfirm('submit')}
@@ -749,6 +850,8 @@ export default function App() {
               await refreshJobs();
             })}
             onDetail={(job) => void action('inspect', async () => setDetail(await getGpuJob(job.id)))}
+            onRetain={(job) => void retainJob(job)}
+            onInstance={(job) => { const instance = instances.find((item) => instanceIdOf(item) === String(job.instance_id || '')); if (instance) { const id = instanceIdOf(instance); setRuntimeChoice({ accountId: instance.account_id || null, instanceId: id, lifecycle: runtimeChoice.lifecycle, retainIdleMinutes: runtimeChoice.retainIdleMinutes }); setTab('算力'); } }}
           />
         )}
 
@@ -767,6 +870,10 @@ export default function App() {
           <ComputePage
             settings={settings}
             usage={usage}
+            instances={instances}
+            onContinue={continueInstance}
+            onOpenWorkbench={openInstanceWorkbench}
+            onRefreshInstances={() => resourceRefresh.current?.()}
             onStop={() => setConfirm('stop')}
             onCheck={() => void checkGpu()}
             loadingStop={loading === 'stop'}
@@ -778,6 +885,10 @@ export default function App() {
         )}
         {tab === '设置' && (
           <SettingsPanel
+            accounts={accounts}
+            onAccountsChange={setAccounts}
+            instances={instances}
+            onRefreshInstances={() => resourceRefresh.current?.()}
             settings={settings}
             usage={usage}
             specs={specs}

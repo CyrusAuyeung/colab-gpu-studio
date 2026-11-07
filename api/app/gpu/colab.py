@@ -31,15 +31,16 @@ class GoogleColabProvider:
         store,
         owner_id,
         *,
+        account_id=None,
         client=None,
         google=None,
         base_url="https://colaboratory.googleapis.com",
         timeout=10.0,
     ):
-        self.store, self.owner_id = store, owner_id
+        self.store, self.owner_id, self.account_id = store, owner_id, account_id
         self.client = client or httpx.Client(timeout=httpx.Timeout(timeout), follow_redirects=False)
         self._owns_client = client is None
-        self.google = google or GoogleService(store, owner_id, client=self.client)
+        self.google = google or GoogleService(store, owner_id, account_id=account_id, client=self.client)
         self.base_url = base_url.rstrip("/")
 
     @classmethod

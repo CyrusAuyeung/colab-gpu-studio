@@ -4,13 +4,16 @@ import { WorkflowsPanel } from './WorkflowManager';
 import { ThemePicker } from './ComputePage';
 import type { ComputeSpec, GpuSettings, GpuUsage, GpuWorkflow } from '../lib/gpu-api';
 import { GoogleOAuthSetup } from '../components/GoogleOAuthSetup';
+import { AccountDirectory, type GpuAccount } from '../components/AccountDirectory';
+import { InstanceCenter } from '../components/InstanceCenter';
+import type { GpuInstance } from '../components/AccountDirectory';
 import { ComputeSpecs } from '../components/ComputeSpecs';
 import { Card } from '../components/ui';
 import styles from '../gpu.module.css';
 import { cuNumber } from '../lib/ui-helpers';
 
 export function SettingsPanel({
-  settings, usage, specs, specsNote = '', workflows, loading, error,
+  settings, usage, specs, specsNote = '', workflows, loading, error, accounts = [], onAccountsChange, instances = [], onRefreshInstances,
   onConnect, onDisconnect, onCheck, onStop, onImport, onValidate, onPublish, onRollback, onLogout, onBack,
 }: {
   settings: GpuSettings | null;
@@ -30,6 +33,10 @@ export function SettingsPanel({
   onRollback: (workflow: GpuWorkflow) => void;
   onLogout: () => void;
   onBack?: () => void;
+  instances?: GpuInstance[];
+  onRefreshInstances?: () => void;
+  accounts?: GpuAccount[];
+  onAccountsChange?: (accounts: GpuAccount[]) => void;
 }) {
   const [view, setView] = useState<'main' | 'workflows'>('main');
   const [oauthConfigured, setOauthConfigured] = useState(false);
@@ -73,32 +80,10 @@ export function SettingsPanel({
         </div>
       </Card>
 
-      <Card icon={<Plug size={17} strokeWidth={1.6} aria-hidden />} title="Google 连接" aside={settings?.offline_mode ? <span className="pill">离线模式</span> : undefined}>
-        <div className={styles.connList}>
-          {(['colab', 'drive'] as const).map((purpose) => {
-            const state = settings?.google?.[purpose];
-            const connected = Boolean(state?.connected);
-            const configured = oauthConfigured || Boolean(state?.configured);
-            const name = purpose === 'colab' ? 'Google Colab' : 'Google Drive';
-            const sub = purpose === 'colab' ? '用来启动和管理云端 GPU' : '用来保存和同步云端文件';
-            return (
-              <div className={styles.connItem} key={purpose}>
-                <span>
-                  <strong>{name}</strong>
-                  <small className="muted">{sub} · {connected ? '已连接' : configured ? '待授权' : '未配置'}</small>
-                </span>
-                {connected ? (
-                  <span className={styles.connBtns}>
-                    <button className="button secondary small" type="button" onClick={() => onConnect(purpose)} disabled={settings?.offline_mode === true}>重新授权</button>
-                    <button className="button danger small" type="button" onClick={() => onDisconnect(purpose)}>断开</button>
-                  </span>
-                ) : (
-                  <button className="button small" type="button" disabled={settings?.offline_mode === true || !configured} onClick={() => onConnect(purpose)}>连接</button>
-                )}
-              </div>
-            );
-          })}
-        </div>
+      <InstanceCenter instances={instances} onRefresh={onRefreshInstances} />
+
+      <Card icon={<Plug size={17} strokeWidth={1.6} aria-hidden />} title="Google 账号" aside={settings?.offline_mode ? <span className="pill">离线模式</span> : undefined}>
+        <AccountDirectory accounts={accounts} onAccountsChange={onAccountsChange} />
         {!settings?.offline_mode && (
           <details className="foldable">
             <summary>Google 应用配置（首次使用）</summary>

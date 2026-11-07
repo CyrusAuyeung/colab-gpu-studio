@@ -10,6 +10,7 @@ from .gpu.rates import estimate as estimate_units
 from .gpu.rates import length_factor, mode_param
 from .gpu.registry import Registry
 from .gpu.repository import Repository
+from .job_schemas import normalize_policy
 
 
 def repo_registry(st, user):
@@ -32,6 +33,82 @@ def _job_estimate(repo, owner, workflow, policy, cfg, params) -> dict:
     return {"estimated_units": units, "unit_rate": rate, "budget_units": cap * cfg.unit_rate}
 
 
+def _resource(repo, kind, resource_id, user, code, message):
+    """Read a v0.2 resource through the owner-scoped Repository boundary."""
+    try:
+        value = repo.get(kind, resource_id, user["id"])
+    except (AttributeError, KeyError, TypeError, ValueError):
+        value = None
+    if not value:
+        raise APIError(code, message, 404)
+    return value
+
+
+def _account_is_usable(account: dict) -> bool:
+    status = str(account.get("status", account.get("state", "connected"))).lower()
+    return (
+        account.get("enabled", True) is not False
+        and account.get("disabled", False) is not True
+        and account.get("allow_allocation", True) is not False
+        and status not in {"disabled", "needs_reauth", "error", "revoked"}
+        and account.get("authorized", account.get("connected", True)) is not False
+    )
+
+
+def _validate_allocation(repo, user, policy: dict) -> dict:
+    """Validate explicit account/instance requests without cross-identity fallback."""
+    checked = dict(policy)
+    account = None
+    if checked.get("account_id"):
+        account = _resource(repo, "accounts", checked["account_id"], user,
+                            "ACCOUNT_NOT_FOUND", "指定的 Google 账号不存在或不属于当前用户")
+        if not _account_is_usable(account):
+            raise APIError("ACCOUNT_UNAVAILABLE", "指定账号已停用、未授权或不允许自动分配", 409)
+
+    if checked.get("instance_id"):
+        instance = _resource(repo, "instances", checked["instance_id"], user,
+                             "INSTANCE_NOT_FOUND", "指定 GPU 实例不存在或不属于当前用户")
+        state = str(instance.get("state", "")).lower()
+        if state in {"released", "deleted", "releasing", "unknown", "cleanup_pending", "quarantined"}:
+            raise APIError("INSTANCE_UNAVAILABLE", "指定 GPU 实例已释放或当前不可复用", 409)
+        instance_account = instance.get("account_id")
+        if instance_account and checked.get("account_id") and instance_account != checked["account_id"]:
+            raise APIError("ACCOUNT_INSTANCE_CONFLICT", "指定账号与实例不属于同一身份", 422)
+        if instance_account and not checked.get("account_id"):
+            checked["account_id"] = instance_account
+            account = _resource(repo, "accounts", instance_account, user,
+                                "ACCOUNT_NOT_FOUND", "实例所属账号不存在或不属于当前用户")
+            if not _account_is_usable(account):
+                raise APIError("ACCOUNT_UNAVAILABLE", "实例所属账号已停用或未授权", 409)
+        if instance.get("provider") and instance["provider"] != checked["provider"]:
+            raise APIError("PROVIDER_INVALID", "指定实例与请求 Provider 不匹配", 422)
+        if instance.get("current_job_id") or state in {"busy", "running"}:
+            raise APIError("INSTANCE_BUSY", "指定 GPU 实例当前正在执行其他任务", 409)
+
+    # Automatic account selection is only allowed to inspect eligible accounts;
+    # it must never silently fail over from one identity to another.
+    if checked["provider"] == "colab" and not checked.get("account_id"):
+        try:
+            accounts = repo.list("accounts", user["id"])
+        except (AttributeError, KeyError, TypeError, ValueError):
+            accounts = []
+        if accounts and not any(_account_is_usable(item) for item in accounts):
+            raise APIError("ACCOUNT_UNAVAILABLE", "没有允许分配且已授权的 Google 账号", 409)
+    return checked
+
+
+def _google_status(repo, owner_id, account_id):
+    from .gpu.google import GoogleService
+
+    service = GoogleService(repo, owner_id)
+    try:
+        return service.status(account_id=account_id)
+    except TypeError:
+        # v0.1 service compatibility; v0.2's account-aware implementation
+        # accepts the keyword and is always preferred above.
+        return service.status()
+
+
 def admit_job(st, user, body, key, *, validate_only=False):
     repo, registry = repo_registry(st, user)
     if not key or len(key) > 200:
@@ -43,13 +120,16 @@ def admit_job(st, user, body, key, *, validate_only=False):
         return existing
     project = own(st, "projects", body["project_id"], user)
     cfg = GpuConfig.from_env()
-    policy = body["execution_policy"]
+    policy = _validate_allocation(repo, user, normalize_policy(body["execution_policy"]))
     if policy["provider"] not in {"mock", "colab"}:
         raise APIError("PROVIDER_INVALID", "仅允许已配置的 mock 或 colab Provider")
     if policy["provider"] == "colab" and not cfg.real_enabled:
         raise APIError("REAL_GPU_DISABLED", "真实 GPU 默认关闭：请先配置 OAuth、费率预算并完成模型审查")
-    if not policy["shutdown_after_job"] or policy["idle_grace_minutes"] != 0:
-        raise APIError("POLICY_RESTRICTED", "当前版本强制任务后释放 GPU，不允许客户端延长闲置")
+    if policy["provider"] == "colab" and policy["lifecycle"] in {"smart", "retain"}:
+        import os
+
+        if os.getenv("GPU_REAL_RETENTION_VERIFIED") != "1" and os.getenv("GPU_REAL_RETENTION_TEST_ENABLED") != "1":
+            raise APIError("REAL_LIFECYCLE_UNVERIFIED", "真实 GPU 的智能/保留生命周期尚未完成真机验证", 503)
     workflow = registry.get_workflow(user["id"], body["workflow_key"], body["workflow_version"])
     if workflow.get("state") != "published" or workflow["model_id"] != body["model_id"]:
         raise APIError("WORKFLOW_UNPUBLISHED", "工作流未发布或与模型不匹配")
@@ -90,16 +170,17 @@ def admit_job(st, user, body, key, *, validate_only=False):
         snapshot["manifest"] = {**snapshot["manifest"], "state": "published", "reviewed": True}
         if cfg.unit_rate is None:
             raise APIError("RATE_UNKNOWN", "未设置可信的估算费率，拒绝开机")
-        from .gpu.google import GoogleService
-
-        status = GoogleService(repo, user["id"]).status()
+        status = _google_status(repo, user["id"], policy.get("account_id"))
         if not status["colab"]["connected"]:
-            raise APIError("GOOGLE_NOT_CONNECTED", "请先授权个人 Google Colab 账户")
+            raise APIError("GOOGLE_NOT_CONNECTED", "请先授权对应 Google Colab 账户")
     # After the published stamp, so the curated LoRA weight files stay in the manifest the runtime restores.
     if body.get("loras"):
         _apply_loras(repo, user, workflow, body["loras"], snapshot, policy["provider"])
     if validate_only:
-        return {**body, "snapshot": snapshot, "params": params,
+        return {**body, "execution_policy": policy,
+                "requested_account_id": policy.get("account_id"),
+                "requested_instance_id": policy.get("instance_id"),
+                "snapshot": snapshot, "params": params,
                 "resolved_seed": params.get("seed"),
                 "max_runtime_minutes": min(policy["max_runtime_minutes"], cfg.max_runtime_minutes),
                 **_job_estimate(repo, user["id"], workflow, policy, cfg, params)}
@@ -108,6 +189,9 @@ def admit_job(st, user, body, key, *, validate_only=False):
         if not acquired:
             raise APIError("SCHEDULER_BUSY", "队列正在同步，请用相同幂等键稍后重试", 503, True)
         job, created = repo.create_job(user["id"], body, key, admitted={
+            "execution_policy": policy,
+            "requested_account_id": policy.get("account_id"),
+            "requested_instance_id": policy.get("instance_id"),
             "snapshot": snapshot,
             "params": params,
             "resolved_seed": params.get("seed"),
