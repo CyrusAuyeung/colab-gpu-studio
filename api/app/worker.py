@@ -29,6 +29,7 @@ def main():
     signal.signal(signal.SIGTERM, stop)
     signal.signal(signal.SIGINT, stop)
     store = Store(settings.database_url)
+    last_ccu_tick = 0.0
     while running:
         try:
             scheduler = Scheduler(store)
@@ -37,6 +38,21 @@ def main():
                 from .atelier_routes import auto_export_tick
 
                 auto_export_tick(store)
+            if args.mode == "worker" and time.time() - last_ccu_tick >= 60:
+                # Balance snapshots and leaked-runtime detection: read-only, no CU cost.
+                last_ccu_tick = time.time()
+                try:
+                    from .gpu.ccu import tick_ccu
+                    from .gpu.repository import Repository
+
+                    repo = Repository(store)
+                    owner_ids = sorted(
+                        {str(account["owner_id"]) for account in repo.list("accounts") if account.get("owner_id")}
+                    )
+                    for owner_id in owner_ids:
+                        tick_ccu(repo, owner_id)
+                except Exception as exc:  # noqa: BLE001 - never stop the queue for accounting
+                    log.warning("ccu tick failed: %s", type(exc).__name__)
             if result.get("advanced"):
                 log.info("job=%s state=%s", result.get("job_id"), result.get("state"))
         except Exception as exc:

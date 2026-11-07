@@ -65,9 +65,15 @@ class DriveStorage:
         self.job_id = str(self.job.get("id") or self.job.get("job_id") or job)
         self.store = store
         self.owner_id = owner_id or self.job.get("owner_id")
-        self.account_id = account_id if account_id is not None else self.job.get("account_id")
+        raw_account_id = (
+            account_id
+            if account_id is not None
+            else (self.job.get("drive_account_id") or self.job.get("account_id"))
+        )
+        self.compute_account_id = self.job.get("account_id") if account_id is None else account_id
         if not self.store or not self.owner_id:
             raise DriveError("DriveStorage需要Repository和owner_id")
+        self.account_id = self._resolve_storage_account_id(raw_account_id)
         self.client = client or httpx.Client(timeout=httpx.Timeout(timeout), follow_redirects=False)
         self._owns_client = client is None
         self.google = google or GoogleService(store, self.owner_id, account_id=self.account_id, client=self.client)
@@ -173,9 +179,19 @@ class DriveStorage:
 
     def _repo_files(self) -> list[dict]:
         try:
-            return [row for row in self.store.list("files", self.owner_id) if isinstance(row, dict)]
+            return list(self.store.list("files", self.owner_id))
         except (AttributeError, KeyError, TypeError, ValueError):
             return []
+
+    def _resolve_storage_account_id(self, candidate: str | None) -> str | None:
+        if not candidate:
+            return candidate
+        try:
+            from .accounts import AccountService
+
+            return AccountService(self.store, self.owner_id).resolve_drive_account_id(candidate)
+        except Exception:
+            return candidate
 
     def _is_legacy_account(self) -> bool:
         """Whether this storage represents the pre-account default identity."""

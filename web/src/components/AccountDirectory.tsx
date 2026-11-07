@@ -14,7 +14,9 @@ export interface GpuAccount {
   drive?: { status?: AuthorizationStatus; scopes?: string[]; checked_at?: string; expires_at?: string };
   colab_status?: AuthorizationStatus;
   drive_status?: AuthorizationStatus;
-  authorization?: { colab?: { connected?: boolean; configured?: boolean; expires_at?: string | null; message?: string }; drive?: { connected?: boolean; configured?: boolean; expires_at?: string | null; message?: string } };
+  drive_account_id?: string | null;
+  drive_account_alias?: string | null;
+  authorization?: { colab?: { connected?: boolean; configured?: boolean; expires_at?: string | null; message?: string }; drive?: { connected?: boolean; configured?: boolean; expires_at?: string | null; message?: string; delegated_to?: string; delegated_alias?: string } };
   allow_allocation?: boolean;
   enabled?: boolean;
   budget?: number | Record<string, unknown> | null;
@@ -293,13 +295,42 @@ export function AccountDirectory({ accounts: suppliedAccounts, api, onAccountsCh
               <div className={styles.authGrid}>
                 {(['colab', 'drive'] as const).map((purpose) => {
                   const auth = purpose === 'colab' ? colab : drive;
-                  return <div className={styles.authCell} key={purpose}><span>{purpose === 'colab' ? 'Colab' : 'Drive'}</span><b>{statusLabel(auth)}</b><button type="button" className={styles.buttonSecondary} disabled={Boolean(busy)} onClick={() => void authorize(account, purpose)}>{auth === 'connected' ? '重新授权' : '授权'}</button></div>;
+                  const delegatedAlias = purpose === 'drive' ? (account.drive_account_alias || account.authorization?.drive?.delegated_alias) : null;
+                  return <div className={styles.authCell} key={purpose}><span>{purpose === 'colab' ? 'Colab' : 'Drive'}</span><b>{delegatedAlias ? `复用「${delegatedAlias}」(${statusLabel(auth)})` : statusLabel(auth)}</b><button type="button" className={styles.buttonSecondary} disabled={Boolean(busy)} onClick={() => void authorize(account, purpose)}>{auth === 'connected' ? '重新授权' : '授权'}</button></div>;
                 })}
               </div>
               <div className={styles.accountControls}>
                 <label className={styles.toggleRow}><input type="checkbox" checked={account.enabled !== false} disabled={Boolean(busy)} onChange={(event) => void updateAccount(account, { enabled: event.target.checked }, `account-enabled-${account.account_id}`, event.target.checked ? '账号已启用。' : '账号已停用，不会分配新任务。')} /><span>允许使用</span></label>
                 <label className={styles.toggleRow}><input type="checkbox" checked={account.allow_allocation === true} disabled={Boolean(busy) || account.enabled === false} onChange={(event) => void updateAccount(account, { allow_allocation: event.target.checked }, `account-allocation-${account.account_id}`, event.target.checked ? '已允许新任务分配。' : '已禁止新任务分配。')} /><span>允许分配</span></label>
-                <label className={styles.budgetField}><span>安全预算（站内估算 CU）</span><input type="number" min="0" step="any" value={budgetDraft[account.account_id] ?? (typeof account.budget === 'object' && account.budget ? String((account.budget as Record<string, unknown>).daily_units ?? '') : account.budget_limit ?? '')} disabled={Boolean(busy)} onChange={(event) => setBudgetDraft({ ...budgetDraft, [account.account_id]: event.target.value })} onBlur={(event) => { const value = event.target.value.trim(); if (value !== '') void updateAccount(account, { budget: { ...(typeof account.budget === 'object' && account.budget ? account.budget : {}), daily_units: Number(value) } }, `account-budget-${account.account_id}`, '账号预算已更新。'); }} /></label>
+                {accounts.length > 1 && (
+                  <label className={styles.budgetField}>
+                    <span>Drive 存储来源</span>
+                    <select
+                      aria-label="Drive 存储来源"
+                      value={account.drive_account_id || ''}
+                      disabled={Boolean(busy)}
+                      onChange={(event) => {
+                        const target = event.target.value || null;
+                        void updateAccount(
+                          account,
+                          { drive_account_id: target },
+                          `account-drive-source-${account.account_id}`,
+                          target ? '已切换为复用指定账号的 Drive 存储。' : '已切换为使用本账号独立 Drive。',
+                        );
+                      }}
+                    >
+                      <option value="">本账号独立 Drive</option>
+                      {accounts
+                        .filter((item) => item.account_id !== account.account_id && !item.drive_account_id && authStatus(item, 'drive') === 'connected')
+                        .map((item) => (
+                          <option key={item.account_id} value={item.account_id}>
+                            复用：{item.alias || item.account_id.slice(0, 8)}
+                          </option>
+                        ))}
+                    </select>
+                  </label>
+                )}
+                <label className={styles.budgetField}><span>安全预算（站内估算 CU）</span><input type="number" min="0" step="any" value={budgetDraft[account.account_id] ?? (typeof account.budget === 'object' && account.budget ? String((account.budget as Record<string, unknown>).daily_units ?? (account.budget as Record<string, unknown>).daily ?? '') : account.budget_limit ?? '')} disabled={Boolean(busy)} onChange={(event) => setBudgetDraft({ ...budgetDraft, [account.account_id]: event.target.value })} onBlur={(event) => { const value = event.target.value.trim(); if (value !== '') void updateAccount(account, { budget: { ...(typeof account.budget === 'object' && account.budget ? account.budget : {}), daily: Number(value), daily_units: Number(value) } }, `account-budget-${account.account_id}`, '账号预算已更新。'); }} /></label>
               </div>
               <div className={styles.cardActions}>
                 <button type="button" className={styles.buttonSecondary} disabled={Boolean(busy)} onClick={() => { setEditingId(account.account_id); setEditAlias(account.alias || ''); }}>改名</button>

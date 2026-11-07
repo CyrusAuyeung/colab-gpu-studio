@@ -181,6 +181,7 @@ class Scheduler:
             patch["instance_id"] = instance_id
         for key in (
             "account_id",
+            "drive_account_id",
             "account_alias_snapshot",
             "instance_label",
             "gpu_reported",
@@ -623,7 +624,18 @@ class Scheduler:
             or os.getenv("GPU_PREP", "on").strip().lower() == "off"
         ):
             return False
-        preps = prep_jobs_for(self.store, job["owner_id"], snapshot)
+        drive_account_id = job.get("drive_account_id")
+        if not drive_account_id and job.get("account_id"):
+            try:
+                from .accounts import AccountService
+
+                drive_account_id = AccountService(self.store, job["owner_id"]).resolve_drive_account_id(job.get("account_id"))
+            except Exception:
+                drive_account_id = job.get("account_id")
+        try:
+            preps = prep_jobs_for(self.store, job["owner_id"], snapshot, drive_account_id=drive_account_id)
+        except TypeError:
+            preps = prep_jobs_for(self.store, job["owner_id"], snapshot)
         done = next((p for p in preps if p["state"] == "completed"), None)
         if done:
             if done["id"] == job.get("prep_job_id") and job.get("prep_seconds") is None:
@@ -646,10 +658,12 @@ class Scheduler:
                 "model_id": job.get("model_id"),
                 "workflow_key": job.get("workflow_key"),
                 "workflow_version": job.get("workflow_version"),
+                "account_id": job.get("account_id") or job.get("requested_account_id"),
+                "drive_account_id": drive_account_id,
             }
             prep = create_prep_job(
                 self.store, job["owner_id"], job.get("project_id"), snapshot, meta,
-                prep_idempotency_key(cache_key(snapshot)), for_job_id=job["id"],
+                prep_idempotency_key(cache_key(snapshot), drive_account_id or ""), for_job_id=job["id"],
             )
         self._update("jobs", job["id"], {"prep_job_id": prep["id"]}, job.get("owner_id"))
         self._event(job, "waiting_for_capacity", "准备缓存（CPU）：为这个任务自动准备环境和模型缓存，完成后自动开始", None)
@@ -1348,6 +1362,42 @@ class Scheduler:
             cleanup_final_state="completed",
         )
 
+    def _measure_spend(self, job: dict, lease: dict | None) -> dict:
+        """Measure the real Google spend for this job when the balance is observable.
+
+        Attribution is only exclusive when no other lease on the same account was
+        active, otherwise the delta may include a sibling job and is flagged.
+        """
+        if self._provider_name(job) == "mock" or not job.get("account_id"):
+            return {}
+        owner_id = job.get("owner_id")
+        if not owner_id:
+            return {}
+        from . import ccu
+
+        before = job.get("ccu_before")
+        after = ccu.maybe_sample_balance(self.store, owner_id, job.get("account_id"))
+        contended = ccu.active_lease_count(
+            self.store,
+            owner_id,
+            job.get("account_id"),
+            exclude_lease_id=(lease or {}).get("id"),
+        ) > 0
+        patch: dict = {"ccu_measured_at": self.clock()}
+        if after:
+            patch["ccu_after"] = after["balance"]
+            patch["ccu_after_at"] = after["at"]
+        measured = ccu.reconcile(before, patch.get("ccu_after"))
+        if measured is not None:
+            patch["actual_units"] = measured
+            patch["ccu_attribution"] = "contended" if contended else "exclusive"
+            patch["ccu_source"] = "google_balance"
+        elif before is None:
+            patch["ccu_source"] = "baseline_missing"
+        else:
+            patch["ccu_source"] = "after_missing"
+        return patch
+
     def _record_usage(self, job: dict, lease: dict, stopped_at: float) -> None:
         if self._list("usage", job.get("owner_id")):
             if any(row.get("job_id") == job.get("id") and row.get('execution_id')==job.get('execution_id') for row in self._list("usage", job.get("owner_id"))):
@@ -1357,6 +1407,14 @@ class Scheduler:
         is_mock = self._provider_name(job) == "mock"
         rate = float(job.get("unit_rate") or self.config.unit_rate or 0)
         estimate = 0.0 if is_mock else elapsed_minutes * rate
+        spend: dict = {}
+        if not is_mock:
+            try:
+                spend = self._measure_spend(job, lease)
+            except Exception as exc:  # noqa: BLE001 - never fail a finished job on accounting
+                logging.getLogger(__name__).warning("ccu reconciliation failed: %s", type(exc).__name__)
+                spend = {}
+        measured = spend.get("actual_units")
         payload = {
             "job_id": job["id"],
             "execution_id": job.get('execution_id'),
@@ -1364,8 +1422,12 @@ class Scheduler:
             "mock": is_mock,
             "units": estimate,
             "units_estimate": estimate,
-            "units_actual": 0.0 if is_mock else None,
-            "source": "simulated" if is_mock else "administrator_estimate",
+            "units_actual": measured if not is_mock else 0.0,
+            "ccu_before": job.get("ccu_before"),
+            "ccu_after": spend.get("ccu_after"),
+            "ccu_attribution": spend.get("ccu_attribution"),
+            "ccu_source": spend.get("ccu_source", "not_sampled" if not is_mock else "simulated"),
+            "source": "google_balance" if measured is not None else ("simulated" if is_mock else "administrator_estimate"),
             "unit_rate": rate,
             "elapsed_minutes": elapsed_minutes,
             "started_at": started,
@@ -1382,7 +1444,12 @@ class Scheduler:
         self._update(
             "jobs",
             job["id"],
-            {"actual_units": 0.0 if is_mock else None, "stopped_at": stopped_at, "runtime_deleted": True},
+            {
+                "actual_units": 0.0 if is_mock else measured,
+                "stopped_at": stopped_at,
+                "runtime_deleted": True,
+                **{key: value for key, value in spend.items() if key.startswith("ccu_")},
+            },
             job.get("owner_id"),
         )
 

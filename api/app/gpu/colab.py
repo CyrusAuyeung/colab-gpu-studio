@@ -2,16 +2,31 @@
 
 from __future__ import annotations
 
+import json
 import re
+import time
 import uuid
 
 import httpx
+
+from app.security import decrypt_secret, encrypt_secret
 
 from .google import GoogleError, GoogleService
 
 
 class ColabError(GoogleError):
     pass
+
+
+_CLI_PUBLIC_CLIENT_ID = "764086051850-6qr4p6gpi6hn506pt8ejuq83di341hur.apps.googleusercontent.com"
+_TUNNEL_BASE_URL = "https://colab.research.google.com"
+_XSSI_PREFIX = ")]}'\n"
+_HIGH_MEM_ONLY_ACCELERATORS = frozenset({"L4", "V5E1", "V6E1"})
+
+
+def _uuid_to_web_safe_base64(uuid_val: uuid.UUID) -> str:
+    uuid_str = str(uuid_val)
+    return uuid_str.replace("-", "_") + ("." * (44 - len(uuid_str)))
 
 
 _RUNTIME_ID = re.compile(r"^[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$")
@@ -75,13 +90,135 @@ class GoogleColabProvider:
         except ValueError as exc:
             raise ColabError("Colab API 返回无效 JSON") from exc
 
+    def _is_cli_tunnel(self, lease: dict | None = None) -> bool:
+        if isinstance(lease, dict) and lease.get("tunnel_endpoint"):
+            return True
+        try:
+            cred = self.google._credential("colab", account_id=self.account_id)
+        except Exception:
+            cred = None
+        if isinstance(cred, dict):
+            cid = str(cred.get("client_id") or "").strip()
+            if cid == _CLI_PUBLIC_CLIENT_ID or cid.startswith("764086051850-"):
+                return True
+        return False
+
+    def _tunnel_request(self, method: str, path: str, *, params: dict | None = None, headers: dict | None = None):
+        token = self.google.access_token("colab")
+        req_params = {"authuser": "0"}
+        if params:
+            req_params.update(params)
+        req_headers = {
+            "Authorization": "Bearer " + token,
+            "Accept": "application/json",
+            "X-Colab-Client-Agent": "colab-cli",
+        }
+        if headers:
+            req_headers.update(headers)
+        try:
+            response = self.client.request(
+                method,
+                _TUNNEL_BASE_URL + path,
+                params=req_params,
+                headers=req_headers,
+            )
+        except httpx.HTTPError as exc:
+            raise ColabError("Colab 隧道网络异常，远端结果可能未知，将保留租约进行协调") from exc
+        if response.status_code >= 400 and response.status_code != 404:
+            raise ColabError(f"Colab 隧道请求失败（HTTP {response.status_code}）")
+        return response
+
+    @staticmethod
+    def _tunnel_json(response) -> dict:
+        text = response.text or ""
+        if text.startswith(_XSSI_PREFIX):
+            text = text[len(_XSSI_PREFIX) :]
+        if not text.strip():
+            return {}
+        try:
+            payload = json.loads(text)
+            if not isinstance(payload, dict):
+                raise ValueError()
+            return payload
+        except ValueError as exc:
+            raise ColabError("Colab 隧道返回无效 JSON") from exc
+
+    def _tunnel_assignments(self) -> list[dict]:
+        payload = self._tunnel_json(self._tunnel_request("GET", "/tun/m/assignments"))
+        rows = payload.get("assignments")
+        return [r for r in rows if isinstance(r, dict)] if isinstance(rows, list) else []
+
     def list_specs(self):
+        if self._is_cli_tunnel():
+            info = self._tunnel_json(self._tunnel_request("GET", "/tun/m/ccu-info"))
+            specs = [
+                {
+                    "key": {"variant": "VARIANT_CPU", "accelerator": "NONE", "shape": "SHAPE_STANDARD"},
+                    "eligible": True,
+                }
+            ]
+            for gpu in info.get("eligibleGpus") or []:
+                if isinstance(gpu, str) and gpu:
+                    specs.append(
+                        {
+                            "key": {"variant": "VARIANT_GPU", "accelerator": gpu.upper(), "shape": "SHAPE_STANDARD"},
+                            "eligible": True,
+                        }
+                    )
+                    if gpu.upper() not in _HIGH_MEM_ONLY_ACCELERATORS:
+                        specs.append(
+                            {
+                                "key": {"variant": "VARIANT_GPU", "accelerator": gpu.upper(), "shape": "SHAPE_HIGHMEM"},
+                                "eligible": True,
+                            }
+                        )
+            for tpu in info.get("eligibleTpus") or []:
+                if isinstance(tpu, str) and tpu:
+                    specs.append(
+                        {
+                            "key": {"variant": "VARIANT_TPU", "accelerator": tpu.upper(), "shape": "SHAPE_STANDARD"},
+                            "eligible": True,
+                        }
+                    )
+            return specs
         return self._json(self._request("GET", "/v1beta/runtimespecs")).get("runtimeSpecs", [])
 
     def subscription(self):
+        if self._is_cli_tunnel():
+            info = self._tunnel_json(self._tunnel_request("GET", "/tun/m/ccu-info"))
+            return {
+                "name": "subscription",
+                "tier": "SUBSCRIPTION_TIER_PRO" if float(info.get("currentBalance") or 0) > 0 else "SUBSCRIPTION_TIER_NONE",
+                "paidComputeUnitsBalance": info.get("currentBalance", 0),
+                "consumptionRateHourly": info.get("consumptionRateHourly", 0),
+                "assignmentsCount": info.get("assignmentsCount", 0),
+                "eligibleGpus": info.get("eligibleGpus", []),
+            }
         return self._json(self._request("GET", "/v1beta/subscription"))
 
     def list_runtimes(self):
+        if self._is_cli_tunnel():
+            out = []
+            for a in self._tunnel_assignments():
+                endpoint = a.get("endpoint")
+                if not endpoint:
+                    continue
+                variant_num = a.get("variant")
+                variant = "VARIANT_GPU" if variant_num in (1, "GPU", "VARIANT_GPU") else ("VARIANT_TPU" if variant_num in (2, "TPU", "VARIANT_TPU") else "VARIANT_CPU")
+                shape_num = a.get("machineShape")
+                shape = "SHAPE_HIGHMEM" if shape_num in (1, "HIGH_RAM", "SHAPE_HIGHMEM") else "SHAPE_STANDARD"
+                out.append(
+                    {
+                        "name": f"runtimes/{endpoint}",
+                        "runtimeSpec": {
+                            "variant": variant,
+                            "accelerator": str(a.get("accelerator") or "NONE"),
+                            "shape": shape,
+                        },
+                        "version": "colab-cli-tunnel",
+                    }
+                )
+            return out
         # Never return Google's raw connectionInfo to routes.
         rows = self._json(self._request("GET", "/v1beta/runtimes")).get("runtimes", [])
         return [
@@ -149,6 +286,70 @@ class GoogleColabProvider:
             # Google's detail may contain credentials or notebook data: expose only safe code.
             raise ColabError(f"Colab 分配 Operation 失败（code {code}），请检查资格、配额与库存")
 
+    def _create_tunnel(self, lease: dict, key: dict, request_uuid: uuid.UUID, request_id: str, runtime_id: str) -> dict:
+        nbh = _uuid_to_web_safe_base64(request_uuid)
+        params: dict[str, str] = {"nbh": nbh}
+        variant = key.get("variant")
+        accelerator = str(key.get("accelerator") or "NONE").upper()
+        shape = key.get("shape")
+        if variant == "VARIANT_GPU":
+            params["variant"] = "GPU"
+            if accelerator and accelerator != "NONE":
+                params["accelerator"] = accelerator
+        elif variant == "VARIANT_TPU":
+            params["variant"] = "TPU"
+            if accelerator and accelerator != "NONE":
+                params["accelerator"] = accelerator
+        if shape == "SHAPE_HIGHMEM" and accelerator not in _HIGH_MEM_ONLY_ACCELERATORS:
+            params["shape"] = "hm"
+
+        first = self._tunnel_json(self._tunnel_request("GET", "/tun/m/assign", params=params))
+        if "endpoint" in first and isinstance(first.get("runtimeProxyInfo"), dict):
+            assigned = first
+        else:
+            xsrf = first.get("token")
+            if not isinstance(xsrf, str) or not xsrf:
+                raise ColabError("Colab 隧道分配未返回 XSRF 令牌")
+            assigned = self._tunnel_json(
+                self._tunnel_request(
+                    "POST",
+                    "/tun/m/assign",
+                    params=params,
+                    headers={"X-Goog-Colab-Token": xsrf},
+                )
+            )
+        endpoint = assigned.get("endpoint")
+        proxy = assigned.get("runtimeProxyInfo") or {}
+        proxy_url = proxy.get("url")
+        proxy_token = proxy.get("token")
+        if not (isinstance(endpoint, str) and endpoint and isinstance(proxy_url, str) and proxy_url and isinstance(proxy_token, str) and proxy_token):
+            raise ColabError("Colab 隧道分配响应缺少 endpoint 或代理连接信息")
+        ttl = int(proxy.get("tokenExpiresInSeconds") or 3600)
+        op_name = f"operations/tunnel-{runtime_id}"
+        self.store.update(
+            "leases",
+            lease["id"],
+            {
+                "operation_name": op_name,
+                "operation_done": True,
+                "requested_spec": key,
+                "tunnel_endpoint": endpoint,
+                "tunnel_nbh": nbh,
+                "proxy_url": proxy_url.rstrip("/"),
+                "encrypted_proxy_token": encrypt_secret(proxy_token),
+                "proxy_token_expires_at": time.time() + max(60, ttl - 60),
+            },
+            self.owner_id,
+        )
+        return {
+            "runtime_name": "runtimes/" + runtime_id,
+            "operation_name": op_name,
+            "ready": True,
+            "runtime_id": runtime_id,
+            "request_id": request_id,
+            "owner_id": self.owner_id,
+        }
+
     def create(self, spec, request_id, job_id, runtime_id):
         if not isinstance(runtime_id, str) or not _RUNTIME_ID.fullmatch(runtime_id):
             raise ColabError("runtimeId 必须是字母开头的 RFC1034 标识")
@@ -160,6 +361,8 @@ class GoogleColabProvider:
             raise ColabError("Colab requestId 必须是 UUID4")
         lease = self._lease(runtime_id, request_id, job_id)
         key = self._spec(spec)
+        if self._is_cli_tunnel(lease):
+            return self._create_tunnel(lease, key, request_uuid, request_id, runtime_id)
         response = self._request(
             "POST",
             "/v1beta/runtimes",
@@ -198,8 +401,41 @@ class GoogleColabProvider:
             return None
         return self._json(response)
 
+    def _sync_tunnel_lease(self, lease: dict) -> dict | None:
+        endpoint = lease.get("tunnel_endpoint")
+        assignments = self._tunnel_assignments()
+        matched = next((a for a in assignments if a.get("endpoint") == endpoint), None) if endpoint else None
+        if matched is None:
+            return None
+        proxy = matched.get("runtimeProxyInfo") or {}
+        patch: dict = {}
+        if isinstance(proxy.get("url"), str) and proxy["url"]:
+            patch["proxy_url"] = proxy["url"].rstrip("/")
+        if isinstance(proxy.get("token"), str) and proxy["token"]:
+            patch["encrypted_proxy_token"] = encrypt_secret(proxy["token"])
+            ttl = int(proxy.get("tokenExpiresInSeconds") or 3600)
+            patch["proxy_token_expires_at"] = time.time() + max(60, ttl - 60)
+        if patch:
+            lease = self.store.update("leases", lease["id"], patch, self.owner_id)
+        return matched
+
     def inspect(self, handle):
         lease = self._owned(handle)
+        if self._is_cli_tunnel(lease):
+            endpoint = lease.get("tunnel_endpoint")
+            if not endpoint:
+                unknown = int(lease.get("create_attempts", 0)) > 0 and not lease.get("operation_done")
+                return {"ready": False, "deleted": not unknown, "allocation_unknown": unknown}
+            matched = self._sync_tunnel_lease(lease)
+            if matched is None:
+                return {"ready": False, "deleted": True}
+            return {
+                "ready": True,
+                "deleted": False,
+                "runtime_name": handle["runtime_name"],
+                "runtime_spec": lease.get("requested_spec") or {},
+                "version": "colab-cli-tunnel",
+            }
         operation = self._operation(handle, lease)
         if operation is not None:
             if operation.get("done") is not True:
@@ -224,7 +460,19 @@ class GoogleColabProvider:
         }
 
     def connection_info(self, handle):
-        self._owned(handle)
+        lease = self._owned(handle)
+        if self._is_cli_tunnel(lease):
+            self._sync_tunnel_lease(lease)
+            fresh = self.store.get("leases", lease["id"], self.owner_id) or lease
+            url = fresh.get("proxy_url")
+            enc_tok = fresh.get("encrypted_proxy_token")
+            if not url or not enc_tok:
+                raise ColabError("Colab connectionInfo 未就绪")
+            return {
+                "url": url,
+                "token": decrypt_secret(enc_tok),
+                "expire_time": fresh.get("proxy_token_expires_at"),
+            }
         response = self._request("GET", "/v1beta/" + handle["runtime_name"])
         info = self._json(response).get("connectionInfo", {})
         if not info.get("url") or not info.get("token"):
@@ -233,6 +481,26 @@ class GoogleColabProvider:
 
     def delete(self, handle):
         lease = self._owned(handle)
+        if self._is_cli_tunnel(lease):
+            endpoint = lease.get("tunnel_endpoint")
+            if not endpoint:
+                unknown = int(lease.get("create_attempts", 0)) > 0 and not lease.get("operation_done")
+                return not unknown
+            matched = self._sync_tunnel_lease(lease)
+            if matched is None:
+                return True
+            unassign_get = self._tunnel_request("GET", f"/tun/m/unassign/{endpoint}")
+            if unassign_get.status_code == 404:
+                return True
+            xsrf = self._tunnel_json(unassign_get).get("token")
+            if not isinstance(xsrf, str) or not xsrf:
+                raise ColabError("Colab 隧道释放缺少 XSRF 令牌")
+            self._tunnel_request(
+                "POST",
+                f"/tun/m/unassign/{endpoint}",
+                headers={"X-Goog-Colab-Token": xsrf},
+            )
+            return self._sync_tunnel_lease(lease) is None
         operation = self._operation(handle, lease)
         if operation is not None and operation.get("done") is not True:
             # Deleting a missing runtime during a still-pending create is not release confirmation.

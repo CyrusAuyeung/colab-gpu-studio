@@ -34,6 +34,8 @@ export function ComputePage({
   const estimated = usage?.estimated_units;
   const actual = usage?.actual_units;
   const limit = usage?.daily_limit || settings?.budget?.daily_units;
+  const recon = usage?.reconciliation;
+  const unresolved = (usage?.ccu?.anomalies || []).filter((item) => !item.resolved_at);
 
   return (
     <div className={styles.stack}>
@@ -59,6 +61,28 @@ export function ComputePage({
           <div className={styles.statBox}><small className="muted">在线机器</small><strong>{activeCount}</strong></div>
         </div>
         <p className="muted small">这里的数字是站内按用时估算的，不是 Google 账单。实际余额以 Colab 官网为准。</p>
+      </Card>
+
+      <Card icon={<HardDrive size={17} strokeWidth={1.6} aria-hidden />} title="扣费对账（Google 实测）">
+        <div className={styles.grid2}>
+          <div className={styles.statBox}><small className="muted">实测扣费</small><strong>{cuNumber(recon?.measured_actual_units)}<em> CU</em></strong><small className="muted">任务前后余额差</small></div>
+          <div className={styles.statBox}><small className="muted">同期估算</small><strong>{cuNumber(recon?.measured_estimated_units)}<em> CU</em></strong><small className="muted">按费率高估多</small></div>
+          <div className={styles.statBox}><small className="muted">差额</small><strong>{cuNumber(recon?.variance_units)}<em> CU</em></strong><small className="muted">实测 − 估算</small></div>
+          <div className={styles.statBox}><small className="muted">可对账任务</small><strong>{shown(recon?.measured_jobs)}<em> / {shown((recon?.measured_jobs || 0) + (recon?.unmeasured_jobs || 0))}</em></strong></div>
+        </div>
+        {unresolved.length > 0 && (
+          <p className="small" style={{ color: '#b3261e' }}>
+            检测到空转机器：{unresolved.map((item) => `${item.alias || item.account_id}（${shown(item.assignments)} 台 / 无在跑任务）`).join('；')}
+          </p>
+        )}
+        {(recon?.recent || []).slice(0, 4).map((row) => (
+          <div key={String(row.job_id)} className="muted small">
+            {String(row.job_id || '').slice(0, 8)} · {row.state || '-'} · 实测 {cuNumber(row.actual_units)} CU · 估算 {cuNumber(row.estimated_units)} CU
+            {row.ccu_attribution === 'contended' ? ' · 与其它任务重叠，仅供参考' : ''}
+            {row.actual_units === null || row.actual_units === undefined ? ' · 未采到余额' : ''}
+          </div>
+        ))}
+        <p className="muted small">Google 不提供按任务账单，实测值取任务前后账户余额差；同一账号并行时只能算区间。</p>
       </Card>
 
       <Card icon={<Layers size={17} strokeWidth={1.6} aria-hidden />} title="运行策略">

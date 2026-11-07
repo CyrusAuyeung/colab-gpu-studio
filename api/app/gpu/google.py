@@ -184,9 +184,14 @@ class GoogleService:
             credential = self._credential(purpose, account_id=self.account_id)
             scope_ok = bool(credential and self._scope_sufficient(purpose, credential.get("scope")))
             connected = bool(credential and credential.get("encrypted_refresh_token") and scope_ok)
+            cred_configured = bool(
+                credential
+                and str(credential.get("client_id", "")).strip()
+                and credential.get("encrypted_client_secret")
+            )
             result[purpose] = {
                 "connected": connected,
-                "configured": configured,
+                "configured": configured or cred_configured,
                 "expires_at": credential.get("expires_at") if credential else None,
             }
             if credential and not scope_ok:
@@ -368,7 +373,15 @@ class GoogleService:
             raise GoogleOAuthError("Google OAuth凭证不可用") from exc
         if float(credential.get("expires_at", 0)) > self.clock() + 60:
             return access
-        client_id, client_secret, _redirect = self._config()
+        cred_client_id = str(credential.get("client_id", "")).strip()
+        if cred_client_id and credential.get("encrypted_client_secret"):
+            try:
+                client_id = cred_client_id
+                client_secret = decrypt_secret(credential["encrypted_client_secret"])
+            except (KeyError, TypeError, ValueError) as exc:
+                raise GoogleConfigurationError("Google OAuth配置不可用") from exc
+        else:
+            client_id, client_secret, _redirect = self._config()
         try:
             response = self.client.post(
                 TOKEN_URL,

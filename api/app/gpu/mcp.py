@@ -16,8 +16,11 @@ import time
 import uuid
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlencode
 
 import httpx
+
+from app.security import decrypt_secret
 
 from .google import GoogleService
 from .runtime_worker import MAX_OUTPUT_BYTES
@@ -384,6 +387,204 @@ class MCPGPUExecutor:
                     raise
                 time.sleep(3 * (attempt + 1))
 
+    def _tunnel_lease(self, handle: dict) -> dict | None:
+        if not isinstance(handle, dict) or handle.get("owner_id") != self.owner_id:
+            return None
+        runtime_id = handle.get("runtime_id")
+        if not runtime_id and isinstance(handle.get("runtime_name"), str) and handle["runtime_name"].startswith("runtimes/"):
+            runtime_id = handle["runtime_name"].split("/", 1)[1]
+        if not runtime_id or not hasattr(self.store, "list"):
+            return None
+        req_id = handle.get("request_id")
+        job_id = handle.get("owner_job_id") or handle.get("job_id")
+        for lease in self.store.list("leases", self.owner_id):
+            if lease.get("runtime_id") != runtime_id:
+                continue
+            if req_id and lease.get("request_id") != req_id:
+                continue
+            if job_id and lease.get("owner_job_id") != job_id:
+                continue
+            if lease.get("tunnel_endpoint"):
+                return lease
+        return None
+
+    @staticmethod
+    def _ws_pack_default(msg: dict) -> bytes:
+        body = json.dumps(msg, default=str).encode("utf-8")
+        # Jupyter's default protocol needs at least two buffers (json + zero-length
+        # padding), otherwise strict servers reject the frame before reading it.
+        buffers = [body, b""]
+        nbufs = len(buffers)
+        offsets = [4 * (nbufs + 1)]
+        for index in range(nbufs - 1):
+            offsets.append(offsets[-1] + len(buffers[index]))
+        frame = bytearray(offsets[-1] + len(buffers[-1]))
+        frame[0:4] = nbufs.to_bytes(4, "big")
+        for index, offset in enumerate(offsets):
+            start = 4 * (index + 1)
+            frame[start : start + 4] = offset.to_bytes(4, "big")
+        for index, buffer in enumerate(buffers):
+            start = offsets[index]
+            frame[start : start + len(buffer)] = buffer
+        return bytes(frame)
+
+    @staticmethod
+    def _ws_unpack_default(raw: str | bytes) -> dict:
+        if isinstance(raw, str):
+            return json.loads(raw)
+        nbufs = int.from_bytes(raw[:4], "big")
+        if nbufs < 1:
+            raise ValueError("invalid jupyter ws frame")
+        offsets = [int.from_bytes(raw[4 * (i + 1) : 4 * (i + 2)], "big") for i in range(nbufs)]
+        json_stop = offsets[1] if nbufs > 1 else len(raw)
+        return json.loads(raw[offsets[0] : json_stop].decode("utf-8"))
+
+    def _refresh_tunnel_proxy(self, lease: dict) -> tuple[str, str]:
+        url = lease.get("proxy_url")
+        enc_tok = lease.get("encrypted_proxy_token")
+        exp = float(lease.get("proxy_token_expires_at") or 0)
+        if url and enc_tok and (exp == 0 or exp > time.time() + 120):
+            return str(url).rstrip("/"), decrypt_secret(enc_tok)
+        from .colab import GoogleColabProvider
+
+        provider = GoogleColabProvider(
+            self.store,
+            self.owner_id,
+            account_id=self.account_id or lease.get("account_id"),
+            client=self.client,
+            google=self.google,
+        )
+        matched = provider._sync_tunnel_lease(lease)
+        if matched is None:
+            raise MCPError("Colab 隧道运行时已释放或不存在")
+        fresh = self.store.get("leases", lease["id"], self.owner_id) or lease
+        url = fresh.get("proxy_url")
+        enc_tok = fresh.get("encrypted_proxy_token")
+        if not url or not enc_tok:
+            raise MCPError("Colab 隧道代理凭据缺失")
+        return str(url).rstrip("/"), decrypt_secret(enc_tok)
+
+    def _execute_tunnel_code(self, lease: dict, code: str) -> dict:
+        from websockets.sync.client import connect as ws_connect
+
+        proxy_url, proxy_token = self._refresh_tunnel_proxy(lease)
+        auth_params = {"colab-runtime-proxy-token": proxy_token, "authuser": "0"}
+        headers = {
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+            "X-Colab-Client-Agent": "colab-cli",
+            "X-Colab-Runtime-Proxy-Token": proxy_token,
+        }
+        kernel_id = lease.get("kernel_id")
+        try:
+            if kernel_id:
+                r = self.client.get(f"{proxy_url}/api/kernels/{kernel_id}", headers=headers, params=auth_params)
+                if r.status_code == 404:
+                    kernel_id = None
+                elif r.status_code >= 400:
+                    raise MCPTransient(f"Colab kernel inspect HTTP {r.status_code}")
+            if not kernel_id:
+                rk = self.client.get(f"{proxy_url}/api/kernels", headers=headers, params=auth_params)
+                existing = rk.json() if rk.status_code == 200 else None
+                if isinstance(existing, list) and existing:
+                    kernel_id = existing[0].get("id")
+                else:
+                    rc = self.client.post(
+                        f"{proxy_url}/api/kernels", json={"name": "python3"}, headers=headers, params=auth_params
+                    )
+                    if rc.status_code >= 400:
+                        raise MCPTransient(f"Colab kernel start HTTP {rc.status_code}")
+                    kernel_id = rc.json().get("id")
+                if not isinstance(kernel_id, str) or not kernel_id:
+                    raise MCPError("Colab 隧道未能创建 Jupyter Kernel")
+                self.store.update("leases", lease["id"], {"kernel_id": kernel_id}, self.owner_id)
+        except httpx.HTTPError as exc:
+            raise MCPTransient(f"Colab kernel HTTP error ({type(exc).__name__})") from exc
+
+        ws_base = re.sub(r"^http", "ws", proxy_url, count=1)
+        session_id = uuid.uuid4().hex
+        msg_id = uuid.uuid4().hex
+        query = urlencode({**auth_params, "session_id": session_id})
+        ws_url = f"{ws_base}/api/kernels/{kernel_id}/channels?{query}"
+        req_msg = {
+            "header": {
+                "msg_id": msg_id,
+                "username": "studio",
+                "session": session_id,
+                "date": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                "msg_type": "execute_request",
+                "version": "5.3",
+            },
+            "parent_header": {},
+            "metadata": {},
+            "content": {
+                "code": code,
+                "silent": False,
+                "store_history": False,
+                "user_expressions": {},
+                "allow_stdin": False,
+                "stop_on_error": True,
+            },
+            "channel": "shell",
+        }
+        stdout_parts: list[str] = []
+        error_info: dict | None = None
+        reply_seen = False
+        idle_seen = False
+        deadline = time.monotonic() + self.timeout
+        try:
+            with ws_connect(
+                ws_url,
+                additional_headers={
+                    "X-Colab-Client-Agent": "colab-cli",
+                    "X-Colab-Runtime-Proxy-Token": proxy_token,
+                },
+                open_timeout=min(15.0, self.timeout),
+                close_timeout=5.0,
+                max_size=32 * 1024 * 1024,
+            ) as ws:
+                ws.send(self._ws_pack_default(req_msg))
+                while time.monotonic() < deadline:
+                    remaining = max(0.5, deadline - time.monotonic())
+                    raw = ws.recv(timeout=remaining)
+                    msg = self._ws_unpack_default(raw)
+                    if (msg.get("parent_header") or {}).get("msg_id") != msg_id:
+                        continue
+                    mtype = (msg.get("header") or {}).get("msg_type") or msg.get("msg_type")
+                    content = msg.get("content") or {}
+                    if mtype == "stream":
+                        if content.get("name") == "stdout":
+                            stdout_parts.append(str(content.get("text") or ""))
+                    elif mtype in ("execute_result", "display_data"):
+                        plain = (content.get("data") or {}).get("text/plain")
+                        if isinstance(plain, str):
+                            stdout_parts.append(plain + "\n")
+                    elif mtype == "error":
+                        error_info = {
+                            "name": content.get("ename") or "ExecutionError",
+                            "value": content.get("evalue") or "",
+                        }
+                    elif mtype == "execute_reply":
+                        reply_seen = True
+                        if content.get("status") == "error" and error_info is None:
+                            error_info = {
+                                "name": content.get("ename") or "ExecutionError",
+                                "value": content.get("evalue") or "",
+                            }
+                    elif mtype == "status" and content.get("execution_state") == "idle":
+                        idle_seen = True
+                    if reply_seen and idle_seen:
+                        break
+        except TimeoutError as exc:
+            raise MCPTransient("Colab 隧道 Kernel 执行超时") from exc
+        except Exception as exc:
+            if isinstance(exc, (MCPError, MCPTransient)):
+                raise
+            raise MCPTransient(f"Colab 隧道 WebSocket 异常（{type(exc).__name__}）") from exc
+        if error_info is not None:
+            return {"isError": True, "executionError": error_info, "stdout": "".join(stdout_parts)}
+        return {"stdout": "".join(stdout_parts)}
+
     def _session(self, handle: dict, job_id: str) -> str:
         if not isinstance(handle, dict) or handle.get("owner_id") != self.owner_id:
             raise MCPError("拒绝使用不属于当前owner的Colab租约")
@@ -393,6 +594,8 @@ class MCPGPUExecutor:
         if not isinstance(job_id, str) or not _SAFE_ID.fullmatch(job_id):
             raise MCPError("job id不适合作为稳定MCP sessionId")
         session_id = "studio-" + hashlib.sha256(job_id.encode()).hexdigest()[:32]
+        if self._tunnel_lease(handle) is not None:
+            return f"{parent}/sessions/{session_id}"
         result = self._tool("create_session", {"parent": parent, "sessionId": session_id})
         session = next(
             (
@@ -435,6 +638,18 @@ class MCPGPUExecutor:
             }
         return payload
 
+    def _exec_code_on_handle(self, handle: dict, session: str, execution_id: str, code: str) -> Any:
+        tunnel_lease = self._tunnel_lease(handle)
+        if tunnel_lease is not None:
+            for attempt in range(_NETWORK_ATTEMPTS):
+                try:
+                    return self._tool_value(self._execute_tunnel_code(tunnel_lease, code))
+                except MCPTransient:
+                    if attempt == _NETWORK_ATTEMPTS - 1:
+                        raise
+                    time.sleep(2 * (attempt + 1))
+        return self._tool("execute_code", {"session": session, "executionId": execution_id, "code": code})
+
     def start(self, handle: dict, job: dict, execution_id: str) -> dict:
         execution_id = _uuid4(execution_id)
         if not isinstance(job, dict) or not isinstance(job.get("id"), str):
@@ -442,7 +657,7 @@ class MCPGPUExecutor:
         session = self._session(handle, job["id"])
         root = "/content/ai-studio/" + execution_id
         code = build_bootstrap_code(execution_id, self._payload(job, execution_id, root))
-        result = self._tool("execute_code", {"session": session, "executionId": execution_id, "code": code})
+        result = self._exec_code_on_handle(handle, session, execution_id, code)
         return {
             "execution_id": execution_id,
             "session": session,
@@ -457,7 +672,7 @@ class MCPGPUExecutor:
         session = self._session(handle, job["id"])
         probe_id = str(uuid.uuid4())
         code = build_poll_code(execution_id)
-        result = self._tool("execute_code", {"session": session, "executionId": probe_id, "code": code})
+        result = self._exec_code_on_handle(handle, session, probe_id, code)
         if not isinstance(result, dict):
             raise MCPError("Colab状态响应无效")
         state = result.get("state", "running")
@@ -497,8 +712,12 @@ class MCPGPUExecutor:
                     key = value['artifact_id']
                     offset = objects.offset(key, self.owner_id, execution_id)
                     while offset < item['size_bytes']:
-                        reply = self._tool('execute_code', {'session': session, 'executionId': str(uuid.uuid4()),
-                            'code': build_chunk_code(execution_id, index, offset)})
+                        reply = self._exec_code_on_handle(
+                            handle,
+                            session,
+                            str(uuid.uuid4()),
+                            build_chunk_code(execution_id, index, offset),
+                        )
                         if not isinstance(reply, dict) or reply.get('execution_id') != execution_id or reply.get('offset') != offset:
                             raise MCPError('artifact chunk identity mismatch')
                         try:

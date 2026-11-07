@@ -481,7 +481,9 @@ class InstanceService:
 
     def _bind_job_rows(self, session, job, instance, account, units):
         account_id = self._account_id(account) if account is not None else self._value(self._data(instance), "account_id")
-        account_alias = self._value(self._data(account), "alias", "label", default=None) if account is not None else None
+        account_data = self._data(account) if account is not None else {}
+        account_alias = self._value(account_data, "alias", "label", default=None) if account is not None else None
+        drive_account_id = self._value(account_data, "drive_account_id", default=None) or account_id
         try:
             job_row = self._find(session, "jobs", job["id"], job["owner_id"])
         except ValueError:
@@ -493,6 +495,8 @@ class InstanceService:
                 raise InstanceConflict("job already belongs to another instance")
             data.update(account_id=account_id, instance_id=instance.id, budget_reserved=units,
                         account_alias_snapshot=account_alias)
+            if not data.get("drive_account_id") and drive_account_id:
+                data["drive_account_id"] = drive_account_id
             if job.get("lease_id") is not None:
                 data["lease_id"] = job["lease_id"]
             self._set(job_row, data, state=job_row.state, session=session)

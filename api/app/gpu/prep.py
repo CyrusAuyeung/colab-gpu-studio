@@ -46,9 +46,18 @@ def cache_key(snapshot: dict) -> str:
     return digest({"comfy": commit, "weights": files, **({"custom_nodes": pins} if pins else {})})
 
 
-def prep_jobs_for(repo, owner_id: str, snapshot: dict) -> list[dict]:
+def prep_jobs_for(repo, owner_id: str, snapshot: dict, *, drive_account_id: str | None = None) -> list[dict]:
     key = cache_key(snapshot)
-    return [j for j in repo.list("jobs", owner_id) if is_prep(j) and cache_key(j["snapshot"]) == key]
+    return [
+        j
+        for j in repo.list("jobs", owner_id)
+        if is_prep(j)
+        and cache_key(j["snapshot"]) == key
+        and (
+            drive_account_id is None
+            or (j.get("drive_account_id") or j.get("account_id")) in {None, drive_account_id}
+        )
+    ]
 
 
 def create_prep_job(
@@ -57,6 +66,8 @@ def create_prep_job(
     """Persist one CPU prep job. ``snapshot_parts`` is the reviewed snapshot (manifest/api_graph/object_info...)."""
     cfg = GpuConfig.from_env()
     runtime = min(PREP_MAX_MINUTES, cfg.max_runtime_minutes)
+    account_id = meta.get("account_id")
+    drive_account_id = meta.get("drive_account_id") or account_id
     snapshot = {
         **{k: copy.deepcopy(v) for k, v in snapshot_parts.items() if k not in _DROP},
         "bound_graph": {},
@@ -77,6 +88,7 @@ def create_prep_job(
             "shutdown_after_job": True,
             "max_runtime_minutes": runtime,
             "idle_grace_minutes": 0,
+            **({"account_id": account_id} if account_id else {}),
         },
     }
     job, created = repo.create_job(owner_id, raw, key)
@@ -97,6 +109,8 @@ def create_prep_job(
                 **_prep_estimate(repo, owner_id, meta, snapshot, runtime),
                 "prep": True,
                 **({"for_job_id": for_job_id} if for_job_id else {}),
+                **({"account_id": account_id, "requested_account_id": account_id} if account_id else {}),
+                **({"drive_account_id": drive_account_id} if drive_account_id else {}),
             },
             owner_id,
         )
