@@ -1,8 +1,17 @@
-import { useEffect, useState } from 'react';
-import { apiMessage, getGoogleClientConfig, saveGoogleClientConfig, type GoogleClientConfig } from '../lib/gpu-api';
+import { useEffect, useRef, useState } from 'react';
+import {
+  apiMessage,
+  getGoogleAccounts,
+  getGoogleClientConfig,
+  saveGoogleClientConfig,
+  type GoogleAccount,
+  type GoogleClientConfig,
+} from '../lib/gpu-api';
 import styles from '../gpu.module.css';
 
 export function GoogleOAuthSetup({ onConfigured }: { onConfigured: () => void }) {
+  const [accounts, setAccounts] = useState<GoogleAccount[]>([]);
+  const [accountId, setAccountId] = useState('');
   const [config, setConfig] = useState<GoogleClientConfig | null>(null);
   const [clientId, setClientId] = useState('');
   const [clientSecret, setClientSecret] = useState('');
@@ -11,20 +20,81 @@ export function GoogleOAuthSetup({ onConfigured }: { onConfigured: () => void })
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
+  const configRequest = useRef(0);
+  const targetGeneration = useRef(0);
+  const saveRequest = useRef(0);
   const callback = config?.redirect_uri || `${window.location.origin}/api/gpu/auth/google/callback`;
-  useEffect(() => { let alive = true; getGoogleClientConfig().then((next) => { if (alive) setConfig(next); }).catch((cause) => { if (alive) setError(apiMessage(cause)); }); return () => { alive = false; }; }, []);
+
+  useEffect(() => {
+    const generation = targetGeneration.current;
+    let alive = true;
+    getGoogleAccounts()
+      .then((next) => { if (alive && generation === targetGeneration.current) setAccounts(next); })
+      .catch((cause) => { if (alive && generation === targetGeneration.current) setError(apiMessage(cause)); });
+    return () => { alive = false; };
+  }, []);
+
+  useEffect(() => {
+    const requestId = ++configRequest.current;
+    let alive = true;
+    setConfig(null);
+    getGoogleClientConfig(accountId || undefined)
+      .then((next) => {
+        if (alive && requestId === configRequest.current) setConfig(next);
+      })
+      .catch((cause) => {
+        if (alive && requestId === configRequest.current) setError(apiMessage(cause));
+      });
+    return () => { alive = false; };
+  }, [accountId]);
+
+  function clearDraft() {
+    setClientId('');
+    setClientSecret('');
+    setWebClient(null);
+    setConfirmed(false);
+    setError('');
+    setNotice('');
+  }
+
+  function changeTarget(nextAccountId: string) {
+    // Invalidate in-flight reads before React runs the next effect cleanup.
+    targetGeneration.current += 1;
+    configRequest.current += 1;
+    setAccountId(nextAccountId);
+    setConfig(null);
+    clearDraft();
+  }
+
   async function save() {
     if (busy || !confirmed) return;
+    const targetAccountId = accountId;
+    const targetRequestId = configRequest.current;
+    const saveId = ++saveRequest.current;
     setBusy(true); setError(''); setNotice('');
     try {
-      const next = await saveGoogleClientConfig(webClient ? { client_json: webClient, confirmed: true } : { client_id: clientId.trim(), client_secret: clientSecret, confirmed: true });
+      const body = webClient
+        ? { account_id: targetAccountId || undefined, client_json: webClient, confirmed: true as const }
+        : { account_id: targetAccountId || undefined, client_id: clientId.trim(), client_secret: clientSecret, confirmed: true as const };
+      const next = await saveGoogleClientConfig(body);
+      if (saveId !== saveRequest.current || targetRequestId !== configRequest.current) return;
       setConfig(next); setClientId(''); setClientSecret(''); setWebClient(null); setConfirmed(false);
       setNotice('应用配置已加密保存。下一步点击“连接 Google Colab”和“连接 Google Drive”完成本人授权；不会自动开 GPU。');
       onConfigured();
-    } catch (cause) { setError(apiMessage(cause)); } finally { setBusy(false); }
+    } catch (cause) {
+      if (saveId === saveRequest.current && targetRequestId === configRequest.current) setError(apiMessage(cause));
+    } finally {
+      if (saveId === saveRequest.current) setBusy(false);
+    }
   }
+
   return <section className={styles.card} aria-label="Google OAuth 应用配置"><h2>Google OAuth 应用配置</h2>
     <p className="muted">{config?.configured ? '应用已配置。连接账户与启用 GPU 是另外两步。' : '尚未配置 Google 应用，因此现在不能直接跳转授权。你需要先创建自己的 OAuth 网页客户端。'}</p>
+    <label className="field">配置目标<select aria-label="OAuth 配置目标" value={accountId} disabled={busy} onChange={(event) => changeTarget(event.target.value)}>
+      <option value="">共享默认应用</option>
+      {accounts.map((account) => <option key={account.account_id} value={account.account_id}>{account.alias || account.account_id}</option>)}
+    </select></label>
+    <p className="muted">账号专用应用只影响这个 Google 账号，不会影响其他账号；共享默认应用仅保护依赖共享配置的连接。</p>
     <ol className={styles.oauthSteps}>
       <li>打开 <a href="https://console.cloud.google.com/" target="_blank" rel="noreferrer">Google Cloud 控制台</a>，创建或选择自己的项目。</li>
       <li>在“API 和服务 → 库”启用 Google Drive API，并按 Colab 官方文档启用 Colab API。</li>

@@ -161,3 +161,112 @@ def test_connected_google_client_cannot_be_replaced(monkeypatch, tmp_path):
     Repository(store).create("credentials", "admin", {"provider": "google", "purpose": "drive", "encrypted_refresh_token": encrypt_secret("refresh")})
     replacement = c.post("/api/gpu/auth/google/config", json={"confirmed": True, "client_id": "1234567890-other.apps.googleusercontent.com", "client_secret": "secret-456"})
     assert replacement.status_code == 409
+
+
+def _account(repo, owner, account_id):
+    return repo.create(
+        "accounts",
+        owner,
+        {"account_id": account_id, "alias": account_id, "enabled": True},
+        record_id=account_id,
+    )
+
+
+def _config(c, client_id=CLIENT_ID, secret="secret-123", account_id=None):
+    body = {"confirmed": True, "client_id": client_id, "client_secret": secret}
+    if account_id is not None:
+        body["account_id"] = account_id
+    return c.post("/api/gpu/auth/google/config", json=body)
+
+
+def test_scoped_save_does_not_block_connected_sibling_or_touch_its_token(monkeypatch, tmp_path):
+    c, store = client(monkeypatch, tmp_path, {"id": "admin", "role": "admin"})
+    repo = Repository(store)
+    _account(repo, "admin", "account-a")
+    _account(repo, "admin", "account-b")
+    token = encrypt_secret("refresh-a")
+    repo.create("credentials", "admin", {
+        "provider": "google", "purpose": "drive", "account_id": "account-a",
+        "encrypted_refresh_token": token,
+    })
+
+    saved = _config(c, "1234567890-sibling.apps.googleusercontent.com", "sibling-secret", "account-b")
+
+    assert saved.status_code == 200, saved.text
+    assert repo.get("credentials", "account-a", "admin") is None
+    connected = [row for row in repo.list("credentials", "admin") if row.get("purpose") == "drive"]
+    assert len(connected) == 1
+    assert connected[0]["account_id"] == "account-a"
+    assert decrypt_secret(connected[0]["encrypted_refresh_token"]) == "refresh-a"
+    config = repo.get("credentials", oauth_config_routes.config_id("admin", "account-b"), "admin")
+    assert config["account_id"] == "account-b"
+    assert c.get("/api/gpu/auth/google/config?account_id=account-b").json()["data"]["client_id"] == "1234567890-sibling.apps.googleusercontent.com"
+
+
+def test_connected_target_rejects_changed_app_but_accepts_same_effective_config(monkeypatch, tmp_path):
+    c, store = client(monkeypatch, tmp_path, {"id": "admin", "role": "admin"})
+    repo = Repository(store)
+    _account(repo, "admin", "account-b")
+    assert _config(c, account_id="account-b").status_code == 200
+    repo.create("credentials", "admin", {
+        "provider": "google", "purpose": "colab", "account_id": "account-b",
+        "encrypted_refresh_token": encrypt_secret("refresh-b"),
+    })
+
+    same = _config(c, account_id="account-b")
+    changed = _config(c, "1234567890-replacement.apps.googleusercontent.com", "different-secret", "account-b")
+
+    assert same.status_code == 200, same.text
+    assert changed.status_code == 409
+
+
+def test_scoped_config_rejects_account_owned_by_another_owner(monkeypatch, tmp_path):
+    c, store = client(monkeypatch, tmp_path, {"id": "admin", "role": "admin"})
+    repo = Repository(store)
+    _account(repo, "other-owner", "foreign-account")
+
+    response = _config(c, account_id="foreign-account")
+
+    assert response.status_code == 404
+
+
+def test_migrated_default_bound_app_same_save_is_not_blocked(monkeypatch, tmp_path):
+    c, store = client(monkeypatch, tmp_path, {"id": "admin", "role": "admin"})
+    repo = Repository(store)
+    default_id = AccountService.default_account_id("admin")
+    _account(repo, "admin", default_id)
+    repo.update("accounts", default_id, {"legacy_default": True}, "admin")
+    repo.create("credentials", "admin", {
+        "provider": "google", "purpose": "oauth_client_config", "account_id": default_id,
+        "client_id": CLIENT_ID, "encrypted_client_secret": encrypt_secret("legacy-secret"),
+    }, record_id=oauth_config_routes.config_id("admin"))
+    repo.create("credentials", "admin", {
+        "provider": "google", "purpose": "drive", "account_id": default_id,
+        "encrypted_refresh_token": encrypt_secret("refresh-default"),
+    })
+
+    response = _config(c, CLIENT_ID, "legacy-secret", default_id)
+
+    assert response.status_code == 200, response.text
+    assert response.json()["data"]["client_id"] == CLIENT_ID
+
+
+def test_shared_change_ignores_dedicated_connected_account(monkeypatch, tmp_path):
+    c, store = client(monkeypatch, tmp_path, {"id": "admin", "role": "admin"})
+    repo = Repository(store)
+    _account(repo, "admin", "account-a")
+    assert _config(c, account_id="account-a").status_code == 200
+    repo.create("credentials", "admin", {"provider": "google", "purpose": "colab", "account_id": "account-a", "encrypted_refresh_token": encrypt_secret("refresh-a")})
+    assert _config(c, "1234567890-shared.apps.googleusercontent.com", "new-shared-secret").status_code == 200
+    assert GoogleService(repo, "admin", account_id="account-a")._config()[0] == CLIENT_ID
+
+
+def test_shared_change_still_protects_migrated_default_token(monkeypatch, tmp_path):
+    c, store = client(monkeypatch, tmp_path, {"id": "admin", "role": "admin"})
+    repo = Repository(store)
+    aid = AccountService.default_account_id("admin")
+    _account(repo, "admin", aid)
+    repo.update("accounts", aid, {"legacy_default": True}, "admin")
+    repo.create("credentials", "admin", {"provider": "google", "purpose": "oauth_client_config", "account_id": aid, "client_id": CLIENT_ID, "encrypted_client_secret": encrypt_secret("old-secret")}, record_id=oauth_config_routes.config_id("admin"))
+    repo.create("credentials", "admin", {"provider": "google", "purpose": "colab", "account_id": aid, "encrypted_refresh_token": encrypt_secret("refresh-a")})
+    assert _config(c, "1234567890-changed.apps.googleusercontent.com", "new-shared-secret").status_code == 409

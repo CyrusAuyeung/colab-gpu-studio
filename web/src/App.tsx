@@ -20,6 +20,7 @@ import { GpuParamForm } from './components/GpuParamForm';
 import { ReferencePicker, referenceAssets, supportsReferences } from './components/ReferencePicker';
 import { GoogleOAuthSetup } from './components/GoogleOAuthSetup';
 import { ComputeSpecs } from './components/ComputeSpecs';
+import { resolveGpuCheckRequest } from './lib/colab-check';
 import styles from './gpu.module.css';
 
 const tabs = ['创作', '任务', '作品', '算力'] as const;
@@ -652,24 +653,34 @@ export default function App() {
   }
 
   async function checkGpu() {
-    const canReal = settings?.real_enabled === true && settings?.offline_mode !== true && settings?.google?.colab?.connected === true;
     setSpecs([]);
     setSpecsNote('');
     await action('check', async () => {
-      if (!canReal) {
-        // 真实 GPU 没启用或 Colab 没连接：明确改查模拟，不假装查了真实机器
+      // Fetch after the click so login polling and recent authorizations cannot
+      // turn a not-yet-loaded account directory into a disconnected result.
+      const [currentAccounts, currentSettings] = await Promise.all([
+        apiFetch<GpuAccount[]>('/api/gpu/accounts'),
+        getGpuSettings(),
+      ]);
+      setAccounts(uniqueBy(currentAccounts, (account) => account.account_id));
+      setSettings(currentSettings);
+      const checkRequest = resolveGpuCheckRequest(currentSettings, currentAccounts, runtimeChoice.accountId || null);
+      if (checkRequest.provider === 'mock') {
+        // 真实 GPU 没启用、离线或没有可用账号：明确改查模拟，不假装查了真实机器
         setSpecs(await getGpuComputeSpecs('mock'));
-        setSpecsNote(settings?.offline_mode === true
+        setSpecsNote(checkRequest.reason === 'offline'
           ? '站点处于离线测试模式，下面是「模拟」GPU，不是真实 Colab 机器。'
-          : settings?.real_enabled !== true
+          : checkRequest.reason === 'real_disabled'
             ? '真实 GPU 未启用，下面是「模拟」GPU，不是真实 Colab 机器。'
-            : 'Colab 还没连接，下面是「模拟」GPU。请先到「设置」连接 Colab。');
+            : runtimeChoice.accountId
+              ? '所选 Google 账号未连接或已停用，下面是「模拟」GPU。请先到「设置」完成授权。'
+              : '账号池没有已连接且启用的 Google 账号，下面是「模拟」GPU。请先到「设置」完成授权。');
         return;
       }
-      setSpecs(await getGpuComputeSpecs('colab', runtimeChoice.accountId || null));
+      setSpecs(await getGpuComputeSpecs('colab', checkRequest.accountId));
       setSpecsNote(runtimeChoice.accountId
         ? '已查询所选 Google 账号的 Colab：有申请资格不等于现在一定有空闲 GPU。'
-        : '已查询 Google Colab：有申请资格不等于现在一定有空闲 GPU。');
+        : '已按账号池选择 Google 账号并查询 Colab：有申请资格不等于现在一定有空闲 GPU。');
     });
   }
 

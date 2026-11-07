@@ -115,8 +115,9 @@ class AccountService:
         return result
 
     def _ensure_default(self) -> None:
-        if self._rows("accounts"):
-            return
+        # Existing explicit accounts must remain untouched, but they do not
+        # prove that unscoped pre-v0.2 rows were repaired.  Materialize the
+        # deterministic default whenever a legacy row still lacks identity.
         legacy = [
             *[row for row in self._rows("credentials") if row.get("purpose") in {"colab", "drive"}],
             *self._rows("jobs"),
@@ -126,23 +127,24 @@ class AccountService:
         if not any(row.get("account_id") in (None, "") for row in legacy):
             return
         account_id = self.default_account_id(self.owner_id)
-        data = {
-            "account_id": account_id,
-            "alias": "历史Google账号",
-            "enabled": True,
-            "allow_allocation": False,
-            "projects": [],
-            "workflows": [],
-            "budget": {},
-            "strategy": "manual",
-            "legacy_default": True,
-        }
-        try:
-            self.repo.create("accounts", self.owner_id, data, record_id=account_id)
-        except TypeError:
-            self.repo.create("accounts", self.owner_id, data)
-        except ValueError:
-            pass
+        if self._get(account_id) is None:
+            data = {
+                "account_id": account_id,
+                "alias": "Google账号",
+                "enabled": True,
+                "allow_allocation": False,
+                "projects": [],
+                "workflows": [],
+                "budget": {},
+                "strategy": "manual",
+                "legacy_default": True,
+            }
+            try:
+                self.repo.create("accounts", self.owner_id, data, record_id=account_id)
+            except TypeError:
+                self.repo.create("accounts", self.owner_id, data)
+            except ValueError:
+                pass
         # Migration is exact and local: it never exchanges or invents tokens.
         for kind in ("credentials", "jobs", "leases", "instances", "executions", "files"):
             for row in self._rows(kind):

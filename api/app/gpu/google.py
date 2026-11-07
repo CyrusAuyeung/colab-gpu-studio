@@ -106,6 +106,38 @@ class GoogleService:
         # the old unscoped slot.  Other explicit accounts never use it.
         return account == legacy_default and row_account in (None, "")
 
+    def _legacy_default_config(self, row: dict, owner_id: str) -> bool:
+        """Return whether a migrated default app may be shared owner-wide.
+
+        The migration temporarily attached the old owner-level OAuth app to the
+        deterministic legacy account.  That row is safe to reuse for a newly
+        created account only when the account directory marks that identity as
+        the trusted legacy default.  A normal account-specific OAuth app never
+        becomes owner-wide through this path.
+        """
+        try:
+            from .accounts import AccountService
+
+            default_id = AccountService.default_account_id(owner_id)
+        except (AttributeError, TypeError, ValueError):
+            return False
+        if row.get("account_id") != default_id:
+            return False
+        from app.oauth_config_routes import config_id
+
+        if row.get("id") == config_id(owner_id, default_id):
+            return False  # Newly saved dedicated apps are never legacy-shared.
+        accounts = self._list("accounts", owner_id)
+        default = next(
+            (
+                item
+                for item in accounts
+                if item.get("id") == default_id or item.get("account_id") == default_id
+            ),
+            None,
+        )
+        return bool(default and (default.get("legacy_default") is True or default.get("legacy_trusted") is True))
+
     def _client_config(self, owner_id: str | None = None, account_id: str | None = None) -> dict | None:
         owner = self.owner_id if owner_id is None else owner_id
         if not owner:
@@ -119,8 +151,25 @@ class GoogleService:
         # Web setup saves an owner-wide OAuth application, not an account token.
         # Prefer an account-specific application, then the same owner's shared
         # application. Never borrow another account's app or another owner's app.
-        scoped = [row for row in rows if self._account_matches(row, account_id)]
-        rows = scoped or [row for row in rows if row.get("account_id") in (None, "")]
+        candidates = rows
+        exact = [row for row in candidates if account_id is not None and row.get("account_id") == account_id]
+        scoped = exact or [row for row in candidates if row.get("account_id") in (None, "")]
+        if scoped:
+            from app.oauth_config_routes import config_id
+
+            canonical = config_id(owner, account_id) if account_id is not None else config_id(owner)
+            rows = sorted(scoped, key=lambda row: row.get("id") != canonical)
+        elif account_id is not None:
+            # First preserve the original owner-wide application config. If
+            # migration attached that same app to the trusted legacy default,
+            # permit that exact compatibility case as the final fallback.
+            rows = [row for row in rows if row.get("account_id") in (None, "")]
+            if not rows:
+                # Never borrow a regular account's app or any account's bearer
+                # token through this compatibility path.
+                rows = [row for row in candidates if self._legacy_default_config(row, owner)]
+        else:
+            rows = [row for row in candidates if self._legacy_default_config(row, owner)]
         if not rows:
             return None
         row = rows[0]
@@ -130,8 +179,19 @@ class GoogleService:
             raise GoogleConfigurationError("Google OAuth配置不可用") from exc
         return {"client_id": str(row.get("client_id", "")).strip(), "client_secret": secret, "id": row.get("id")}
 
+    @staticmethod
+    def _legacy_default_id(owner_id: str) -> str | None:
+        try:
+            from .accounts import AccountService
+
+            return AccountService.default_account_id(owner_id)
+        except (AttributeError, TypeError, ValueError):
+            return None
+
     def _config(self, owner_id: str | None = None, account_id: str | None = None) -> tuple[str, str, str]:
-        database = self._client_config(owner_id, account_id)
+        effective_owner = self.owner_id if owner_id is None else owner_id
+        effective_account = self.account_id if account_id is None else account_id
+        database = self._client_config(effective_owner, effective_account)
         if database:
             client_id, client_secret = database["client_id"], database["client_secret"]
         else:
@@ -220,11 +280,13 @@ class GoogleService:
         except GoogleConfigurationError:
             return "", "", self.callback_uri()
 
-    def invalidate_oauth_states(self, owner_id: str | None = None) -> None:
+    def invalidate_oauth_states(self, owner_id: str | None = None, *, account_id: str | None = None) -> None:
         owner = self.owner_id if owner_id is None else owner_id
         if not owner:
             return
         for row in self._list("credentials", owner):
+            if account_id is not None and not self._account_matches(row, account_id):
+                continue
             if row.get("purpose") == "_oauth_state" and not row.get("used_at"):
                 self._update("credentials", row["id"], {"used_at": self.clock()}, owner)
 

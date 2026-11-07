@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useState } from 'react';
 import {
-  acceptGpuWorkflowSmoke, apiMessage, getGpuComputeSpecs, getProjects, getWorkflowActivation,
+  acceptGpuWorkflowSmoke, apiMessage, getGpuComputeSpecs, getGoogleAccounts, getProjects, getWorkflowActivation,
   publishGpuWorkflow, realSmokeGpuWorkflow, reviewGpuModel, reviewGpuWorkflow, validateGpuWorkflow,
-  type GpuWorkflow, type WorkflowActivation,
+  type ComputeSpec, type GpuWorkflow, type WorkflowActivation,
 } from '../lib/gpu-api';
+import { resolveGpuCheckRequest, selectEligibleColabGpuSpec } from '../lib/colab-check';
 import styles from '../gpu.module.css';
 
 const STEPS_POLL_MS = 6000;
@@ -24,7 +25,8 @@ export function WorkflowActivationPanel({
   const [busy, setBusy] = useState(false);
   const [consent, setConsent] = useState(false);
   const [projectId, setProjectId] = useState('');
-  const [specKey, setSpecKey] = useState('');
+  const [accountId, setAccountId] = useState('');
+  const [spec, setSpec] = useState<ComputeSpec | null>(null);
   const [specsLoaded, setSpecsLoaded] = useState(false);
 
   const say = (line: string) => setLog((curr) => [...curr, line]);
@@ -36,17 +38,39 @@ export function WorkflowActivationPanel({
   }, [workflow.id]);
 
   useEffect(() => {
-    void refresh().catch((err) => setError(apiMessage(err)));
-    void getProjects()
-      .then((list) => setProjectId(list[0]?.id || ''))
-      .catch(() => undefined);
-    void getGpuComputeSpecs('colab')
-      .then((list) => {
-        const first = list.find((item) => String(item.key || '').length > 0);
-        setSpecKey(first ? String(first.key) : '');
+    let alive = true;
+    const load = async () => {
+      try {
+        const snapshot = await refresh();
+        const [, accounts] = await Promise.all([getProjects().then((list) => {
+          if (alive) setProjectId(list[0]?.id || '');
+        }), getGoogleAccounts()]);
+        if (!alive) return;
+        const request = resolveGpuCheckRequest(
+          { real_enabled: snapshot.real_enabled, offline_mode: false },
+          accounts,
+          null,
+        );
+        if (request.provider !== 'colab') {
+          throw new Error('没有已启用且已连接 Colab 的账号，无法读取真实 GPU 规格');
+        }
+        const eligible = selectEligibleColabGpuSpec(await getGpuComputeSpecs('colab', request.accountId));
+        if (!eligible) throw new Error('当前账号没有可用的真实 GPU 规格（已过滤 CPU/TPU）');
+        if (!alive) return;
+        // Keep the identity and the complete structured spec together.  The
+        // smoke request below must use the same account that produced this spec.
+        setAccountId(request.accountId);
+        setSpec(eligible);
         setSpecsLoaded(true);
-      })
-      .catch(() => setSpecsLoaded(true));
+      } catch (err) {
+        if (alive) {
+          setError(apiMessage(err));
+          setSpecsLoaded(true);
+        }
+      }
+    };
+    void load();
+    return () => { alive = false; };
   }, [refresh]);
 
   const stepDone = (key: string) => data?.steps.find((step) => step.key === key)?.done === true;
@@ -90,11 +114,20 @@ export function WorkflowActivationPanel({
       }
       if (!stepDone('real_smoke')) {
         if (!projectId) throw new Error('请先创建一个项目，冒烟任务要落在项目里');
-        if (!specKey) throw new Error('当前账号没有可用的 GPU 规格，请先授权 Colab');
+        if (!accountId || !spec) throw new Error('当前账号没有可用的 GPU 规格，请先授权 Colab');
         say('正在提交真实 GPU 冒烟…');
         await realSmokeGpuWorkflow(
           workflow.id,
-          { confirmed: true, project_id: projectId, params: {}, asset_ids: [], spec: { key: specKey } },
+          {
+            confirmed: true,
+            project_id: projectId,
+            params: {},
+            asset_ids: [],
+            account_id: accountId,
+            // Pass the exact structured key returned by the same account's
+            // read-only discovery call; never coerce it to a string.
+            spec,
+          },
           `smoke-${workflow.id}-${Date.now()}`,
         );
         say('已进入队列，最长 5 分钟');

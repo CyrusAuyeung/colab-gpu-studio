@@ -18,6 +18,7 @@ from urllib.parse import urlsplit
 from fastapi import APIRouter, Depends, Request
 
 from .common import APIError, admin, current_user, get_store, ok, own
+from .compute_routes import _require_account
 from .gpu.colab import GoogleColabProvider
 from .gpu.compute import GpuConfig
 from .gpu.google import GoogleService
@@ -228,6 +229,7 @@ def _job_request(workflow_id: str, row: dict, body: Mapping) -> dict:
         "spec": copy.deepcopy(body.get("spec")),
         "execution_policy": {
             "provider": "colab",
+            "account_id": body.get("account_id"),
             "shutdown_after_job": True,
             "max_runtime_minutes": 5,
             "idle_grace_minutes": 0,
@@ -375,7 +377,11 @@ def real_smoke(
     if requested_key is None:
         raise APIError("GPU_SPEC_REQUIRED", "必须提供来自当前账户的spec.key")
     key = _idempotency_key(request)
+    account_id = body.get("account_id")
+    if not isinstance(account_id, str) or not account_id.strip():
+        raise APIError("ACCOUNT_REQUIRED", "真实冒烟必须明确选择Google账号", 422)
     repo = Repository(st)
+    _require_account(repo, user["id"], account_id)
     row = own(repo, "workflows", workflow_id, user)
     if row.get("state") not in {"draft", "validated"}:
         raise APIError("WORKFLOW_REVIEW_INVALID", "真实冒烟只能用于未发布的draft或validated工作流")
@@ -412,6 +418,7 @@ def real_smoke(
         "spec": copy.deepcopy(body["spec"]),
         "execution_policy": {
             "provider": "colab",
+            "account_id": account_id,
             "shutdown_after_job": True,
             "max_runtime_minutes": 5,
             "idle_grace_minutes": 0,
@@ -439,10 +446,12 @@ def real_smoke(
         raise APIError("REAL_GPU_DISABLED", "GPU_REAL_ENABLED尚未启用")
     if cfg.unit_rate is None or cfg.unit_rate <= 0:
         raise APIError("RATE_UNKNOWN", "必须先配置真实GPU每分钟估算费率")
-    google = GoogleService(repo, user["id"])
+    google = GoogleService(repo, user["id"], account_id=account_id)
     if not google.status().get("colab", {}).get("connected"):
         raise APIError("GOOGLE_NOT_CONNECTED", "请先完成个人Colab OAuth授权")
-    chosen_spec = _eligible_spec(GoogleColabProvider(repo, user["id"]).list_specs(), requested_key)
+    chosen_spec = _eligible_spec(
+        GoogleColabProvider(repo, user["id"], account_id=account_id).list_specs(), requested_key
+    )
     # 大模型要先下载权重，五分钟不够；由 manifest.max_runtime_minutes 声明，仍受全局上限约束。
     declared = row["manifest"].get("max_runtime_minutes", 5)
     if isinstance(declared, bool) or not isinstance(declared, int) or declared < 1:
@@ -495,6 +504,9 @@ def real_smoke(
                 {
                     "project_id": project["id"],
                     "provider": "colab",
+                    "account_id": account_id,
+                    "requested_account_id": account_id,
+                    "execution_policy": raw["execution_policy"],
                     "model_id": row["model_id"],
                     "workflow_key": row["workflow_key"],
                     "workflow_version": row["workflow_version"],
@@ -689,8 +701,13 @@ def accept_smoke(
 
 
 @router.get("/workflows/{workflow_id}/activation")
+@router.post("/workflows/{workflow_id}/activation")
 def workflow_activation(
-    workflow_id: str, request: Request, user=Depends(current_user), st=Depends(get_store)
+    workflow_id: str,
+    request: Request,
+    user=Depends(current_user),
+    st=Depends(get_store),
+    body: dict | None = None,
 ):  # noqa: B008
     """Everything the web wizard needs to walk a built-in draft to a usable workflow.
 
@@ -699,6 +716,15 @@ def workflow_activation(
     """
     _admin(user)
     repo = Repository(st)
+    account_id = None
+    if body is not None:
+        if not isinstance(body, dict) or not isinstance(body.get("account_id"), str) or not body["account_id"]:
+            raise APIError("ACCOUNT_REQUIRED", "工作流启用必须明确选择Google账号", 422)
+        account_id = body["account_id"]
+        _require_account(repo, user["id"], account_id)
+        google = GoogleService(repo, user["id"], account_id=account_id)
+        if not google.status().get("colab", {}).get("connected"):
+            raise APIError("GOOGLE_NOT_CONNECTED", "所选Google账号尚未完成Colab授权", 409)
     row = own(repo, "workflows", workflow_id, user)
     model = next((item for item in repo.list("models", user["id"]) if item.get("model_id") == row.get("model_id")), None)
     jobs = [
@@ -751,6 +777,7 @@ def workflow_activation(
                 "version": row.get("workflow_version"),
                 "state": row.get("state"),
                 "active": row.get("active"),
+                "account_id": account_id,
             },
             "model": None
             if model is None
@@ -777,6 +804,7 @@ def workflow_activation(
             "max_runtime_minutes": (row.get("manifest") or {}).get("max_runtime_minutes"),
             "blockers": blockers,
             "done": published and bool(row.get("active")),
+            "account_id": account_id,
         },
         request,
     )

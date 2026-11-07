@@ -185,6 +185,13 @@ def ensure_schema(store: Store) -> None:
                             "ON gpu_instances (owner_id, current_job_id)"
                         )
                     )
+                    # DDL alone cannot reconstruct the v0.2 identity graph.
+                    # Keep startup safe and local: this helper only repairs
+                    # owner/account/instance identity metadata and never calls
+                    # OAuth, Colab, or Drive.
+                    from .legacy_migration import upgrade_legacy_identity
+
+                    upgrade_legacy_identity(connection)
             return
         except OperationalError:
             if attempt == 5:
@@ -228,6 +235,14 @@ class Repository:
             "updated_at": row.updated_at.isoformat() if row.updated_at else None,
         }
         result.update({k: copy.deepcopy(v) for k, v in (row.data or {}).items() if k not in reserved})
+        # v0.2 stores identity in typed columns as well as JSON.  Old rows may
+        # have only the typed value after Alembic 0003; expose and reconcile it
+        # at the repository boundary instead of silently dropping ownership.
+        for field in ("account_id", "instance_id", "current_job_id"):
+            if hasattr(row, field):
+                value = getattr(row, field)
+                if value is not None:
+                    result[field] = copy.deepcopy(value)
         if isinstance(row, GpuWorkflowRow):
             workflow_version = row.workflow_version
             if isinstance(workflow_version, str) and workflow_version.isdigit():

@@ -149,6 +149,29 @@ test('retention, stop, and workbench writes send exact safe bodies', async () =>
   assert.deepEqual(result.body, { action: 'get_reviewed_graph', workflow_key: 'demo-mock', workflow_version: 1 });
 });
 
+test('Google OAuth config reads target the shared app or the selected account', async () => {
+  await api.getGoogleClientConfig();
+  let request = lastRequest();
+  assert.equal(request.url, '/api/gpu/auth/google/config');
+  assert.equal(request.init.method, undefined);
+
+  requests = [];
+  await api.getGoogleClientConfig('account/1');
+  request = lastRequest();
+  assert.equal(request.url, '/api/gpu/auth/google/config?account_id=account%2F1');
+});
+
+test('Google OAuth config writes include account_id only for account-specific apps', async () => {
+  let result = await jsonBody(api.saveGoogleClientConfig({ client_id: 'client', client_secret: 'secret1234', confirmed: true }));
+  assert.equal(result.request.url, '/api/gpu/auth/google/config');
+  assert.deepEqual(result.body, { client_id: 'client', client_secret: 'secret1234', confirmed: true });
+
+  requests = [];
+  result = await jsonBody(api.saveGoogleClientConfig({ account_id: 'account/1', client_json: { web: {} }, confirmed: true }));
+  assert.equal(result.request.url, '/api/gpu/auth/google/config');
+  assert.deepEqual(result.body, { account_id: 'account/1', client_json: { web: {} }, confirmed: true });
+});
+
 test('createGpuBatch accepts the v0.2 retain mode and envelopes are unwrapped', async () => {
   const result = await api.createGpuBatch([], 'retain', 900, 'batch-1');
   assert.deepEqual(result, { ok: true });

@@ -34,6 +34,7 @@ def test_scheduler_detects_new_gpu_from_variant_not_marketing_name():
 def test_cuda_admission_official_spec_without_creating_runtime(monkeypatch):
     st = Store("sqlite:///:memory:")
     spec = official_spec(eligible=True)
+    Repository(st).create("accounts", "owner", {"enabled": True, "allow_allocation": True}, record_id="smoke-account")
     monkeypatch.setattr(
         compute_routes.GpuConfig, "from_env", lambda: GpuConfig(real_enabled=True, unit_rate=0.01)
     )
@@ -54,7 +55,7 @@ def test_cuda_admission_official_spec_without_creating_runtime(monkeypatch):
         headers={"Idempotency-Key": "official-enum-test"}, state=SimpleNamespace(request_id="enum")
     )
     response = compute_routes.cuda_smoke(
-        {"confirmed": True, "spec": spec}, request, {"id": "owner", "role": "admin"}, st
+        {"confirmed": True, "spec": spec, "account_id": "smoke-account"}, request, {"id": "owner", "role": "admin"}, st
     )
     assert response.status_code == 202
     job_id = json.loads(response.body)["data"]["id"]

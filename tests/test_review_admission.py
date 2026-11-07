@@ -125,6 +125,7 @@ def test_real_smoke_rejects_over_budget_before_create(monkeypatch):
     workflow = valid_workflow(repo, model["model_id"])
     repo.update("workflows", workflow["id"], {"review_approved": True}, OWNER["id"])
     st.create("projects", OWNER["id"], {"title": "p"}, record_id="project-1")
+    repo.create("accounts", OWNER["id"], {"enabled": True, "allow_allocation": True}, record_id="smoke-account")
     # Pure policy injection: never enable the real environment switch.
     from app.gpu.compute import GpuConfig
     monkeypatch.setattr(review_routes.GpuConfig, 'from_env',
@@ -148,6 +149,7 @@ def test_real_smoke_rejects_over_budget_before_create(monkeypatch):
             {
                 "confirmed": True,
                 "project_id": "project-1",
+                "account_id": "smoke-account",
                 "params": {"prompt": "x"},
                 "asset_ids": [],
                 "spec": {"key": {"variant": "GPU", "accelerator": "T4", "shape": "STANDARD"}},

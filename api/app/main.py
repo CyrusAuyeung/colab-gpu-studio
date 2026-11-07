@@ -25,6 +25,7 @@ from .admission import _drive, admit_job, repo_registry
 from .atelier_routes import router as atelier_router
 from .batch_routes import build_batch_router
 from .common import APIError, admin, current_user, envelope, get_store, ok, own
+from .compute_routes import _require_account
 from .compute_routes import router as compute_router
 from .config import settings
 from .db import Store
@@ -745,10 +746,12 @@ def compute_specs(
         raise APIError("OFFLINE_MODE", "站点处于离线测试模式，不能连接 Colab。可改查模拟 GPU。", status=409)
     if not GpuConfig.from_env().real_enabled:
         raise APIError("REAL_GPU_DISABLED", "真实 GPU 未启用，不能连接 Colab。可改查模拟 GPU。", status=409)
+    repo = Repository(st)
+    _require_account(repo, user["id"], account_id, require_allocation=False)
     from .gpu.colab import GoogleColabProvider
 
     try:
-        return ok(GoogleColabProvider(Repository(st), user["id"], account_id=account_id or None).list_specs(), request)
+        return ok(GoogleColabProvider(repo, user["id"], account_id=account_id or None).list_specs(), request)
     except APIError:
         raise
     except Exception as exc:
@@ -764,7 +767,9 @@ def subscription(
 ):
     from .gpu.colab import GoogleColabProvider
 
-    return ok(GoogleColabProvider(Repository(st), user["id"], account_id=account_id or None).subscription(), request)
+    repo = Repository(st)
+    _require_account(repo, user["id"], account_id, require_allocation=False)
+    return ok(GoogleColabProvider(repo, user["id"], account_id=account_id or None).subscription(), request)
 
 
 @router.post("/admin/compute/stop")

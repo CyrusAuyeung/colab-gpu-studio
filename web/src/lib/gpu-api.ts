@@ -113,7 +113,18 @@ export interface GpuUsage {
   [key: string]: unknown;
 }
 export interface GpuSettings { provider_default?: Provider; real_enabled?: boolean; google?: { colab?: { connected?: boolean; configured?: boolean; scopes?: string[] }; drive?: { connected?: boolean; configured?: boolean; scopes?: string[] } }; budget?: Record<string, unknown>; storage?: string; [key: string]: unknown; }
-export interface ComputeSpec { id?: string; name?: string; provider?: Provider; gpu?: string; vram_gb?: number; available?: boolean; reason?: string; [key: string]: unknown; }
+export interface ComputeSpec {
+  id?: string;
+  name?: string;
+  provider?: Provider;
+  gpu?: string;
+  vram_gb?: number;
+  available?: boolean;
+  eligible?: boolean;
+  key?: Record<string, unknown> | string;
+  reason?: string;
+  [key: string]: unknown;
+}
 export interface WorkflowBundle { manifest: GpuManifest; api_graph: Record<string, unknown>; object_info: Record<string, unknown>; editable_graph?: Record<string, unknown>; }
 
 const TOKEN_KEY = 'colab-gpu-studio-token';
@@ -208,9 +219,17 @@ export type WorkflowActivation = {
 export const getWorkflowActivation = (id: string) => apiFetch<WorkflowActivation>(`/api/gpu/workflows/${encodeURIComponent(id)}/activation`);
 export const reviewGpuModel = (modelId: string) => apiFetch<unknown>(`/api/gpu/models/${encodeURIComponent(modelId)}/review`, post({ confirmed: true, license_accepted: true }));
 export const reviewGpuWorkflow = (id: string) => apiFetch<GpuWorkflow>(`/api/gpu/workflows/${encodeURIComponent(id)}/review`, post({ confirmed: true }));
+export interface RealSmokeGpuWorkflowRequest {
+  confirmed: true;
+  project_id: string;
+  params: Record<string, unknown>;
+  asset_ids: string[];
+  account_id: string;
+  spec: ComputeSpec;
+}
 export const realSmokeGpuWorkflow = (
   id: string,
-  body: { confirmed: true; project_id: string; params: Record<string, unknown>; asset_ids: string[]; spec: ComputeSpec },
+  body: RealSmokeGpuWorkflowRequest,
   idempotencyKey: string,
 ) => apiFetch<unknown>(`/api/gpu/workflows/${encodeURIComponent(id)}/real-smoke`, {
   method: 'POST', headers: { 'Idempotency-Key': idempotencyKey }, body: JSON.stringify(body),
@@ -314,8 +333,8 @@ export const updateAsset = (id: string, favorite: boolean) => apiFetch<GalleryAs
 export const deleteAsset = (id: string) => apiFetch<void>(`/api/assets/${encodeURIComponent(id)}`, { method: 'DELETE' });
 
 export interface GoogleClientConfig { configured: boolean; client_id?: string; redirect_uri: string; source?: string; }
-export const getGoogleClientConfig = () => apiFetch<GoogleClientConfig>('/api/gpu/auth/google/config');
-export const saveGoogleClientConfig = (body: {client_id?: string; client_secret?: string; client_json?: Record<string, unknown>; confirmed: true}) => apiFetch<GoogleClientConfig>('/api/gpu/auth/google/config', post(body));
+export const getGoogleClientConfig = (accountId?: string) => apiFetch<GoogleClientConfig>(`/api/gpu/auth/google/config${accountId ? `?account_id=${encodeURIComponent(accountId)}` : ''}`);
+export const saveGoogleClientConfig = (body: {account_id?: string; client_id?: string; client_secret?: string; client_json?: Record<string, unknown>; confirmed: true}) => apiFetch<GoogleClientConfig>('/api/gpu/auth/google/config', post(body));
 export const getReferenceAssets = (projectId: string) => apiFetch<GalleryAsset[]>(`/api/assets?project_id=${encodeURIComponent(projectId)}`);
 
 export function createGpuBatch(jobs: GpuJobRequest[], mode: 'save'|'smart'|'batch'|'retain', idleSeconds: number, idempotencyKey: string) {
