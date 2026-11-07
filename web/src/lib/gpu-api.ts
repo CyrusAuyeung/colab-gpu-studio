@@ -163,6 +163,31 @@ export const importGpuWorkflow = (bundle: WorkflowBundle) => apiFetch<GpuWorkflo
 export const validateGpuWorkflow = (id: string) => apiFetch<GpuWorkflow>(`/api/gpu/workflows/${encodeURIComponent(id)}/validate`, post({}));
 export const publishGpuWorkflow = (id: string) => apiFetch<GpuWorkflow>(`/api/gpu/workflows/${encodeURIComponent(id)}/publish`, post({ confirmed: true }));
 export const rollbackGpuWorkflow = (workflow_key: string, version: string | number) => apiFetch<GpuWorkflow>('/api/gpu/workflows/rollback', post({ workflow_key, version }));
+
+export type ActivationStep = { key: string; label: string; done: boolean; next?: boolean; running?: boolean; failed?: boolean };
+export type WorkflowActivation = {
+  workflow: { id: string; workflow_key: string; version: string; state: string; active: boolean };
+  model: null | { model_id: string; review_approved: boolean; license_accepted: boolean; enabled: boolean; license?: string; source?: string };
+  steps: ActivationStep[];
+  smoke: null | { job_id: string; state: string; error_code?: string; error_message?: string };
+  smoke_job_completed: boolean;
+  smoke_kind?: string;
+  real_enabled: boolean;
+  max_runtime_minutes?: number;
+  blockers: string[];
+  done: boolean;
+};
+export const getWorkflowActivation = (id: string) => apiFetch<WorkflowActivation>(`/api/gpu/workflows/${encodeURIComponent(id)}/activation`);
+export const reviewGpuModel = (modelId: string) => apiFetch<unknown>(`/api/gpu/models/${encodeURIComponent(modelId)}/review`, post({ confirmed: true, license_accepted: true }));
+export const reviewGpuWorkflow = (id: string) => apiFetch<GpuWorkflow>(`/api/gpu/workflows/${encodeURIComponent(id)}/review`, post({ confirmed: true }));
+export const realSmokeGpuWorkflow = (
+  id: string,
+  body: { confirmed: true; project_id: string; params: Record<string, unknown>; asset_ids: string[]; spec: ComputeSpec },
+  idempotencyKey: string,
+) => apiFetch<unknown>(`/api/gpu/workflows/${encodeURIComponent(id)}/real-smoke`, {
+  method: 'POST', headers: { 'Idempotency-Key': idempotencyKey }, body: JSON.stringify(body),
+});
+export const acceptGpuWorkflowSmoke = (id: string, jobId: string) => apiFetch<GpuWorkflow>(`/api/gpu/workflows/${encodeURIComponent(id)}/accept-smoke`, post({ confirmed: true, job_id: jobId }));
 export const getGpuPresets = () => apiFetch<GpuPreset[]>('/api/gpu/presets');
 export const saveGpuPreset = (body: { name: string; workflow_version_id: string; overrides: Record<string, unknown> }) => apiFetch<GpuPreset>('/api/gpu/presets', post(body));
 

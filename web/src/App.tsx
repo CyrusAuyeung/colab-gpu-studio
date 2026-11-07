@@ -919,6 +919,7 @@ export default function App() {
               await rollbackGpuWorkflow(wf.workflow_key, wf.workflow_version);
               setWorkflows(await getGpuWorkflows());
             })}
+            onActivated={() => { void getGpuWorkflows().then(setWorkflows); void getGpuModels().then(setModels).catch(() => undefined); }}
             onLogout={() => {
               sessionStorage.removeItem('colab-gpu-studio-token');
               setLoggedIn(false);
