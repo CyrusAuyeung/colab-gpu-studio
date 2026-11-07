@@ -666,8 +666,10 @@ export default function App() {
             : 'Colab 还没连接，下面是「模拟」GPU。请先到「设置」连接 Colab。');
         return;
       }
-      setSpecs(await getGpuComputeSpecs('colab'));
-      setSpecsNote('已查询 Google Colab：有申请资格不等于现在一定有空闲 GPU。');
+      setSpecs(await getGpuComputeSpecs('colab', runtimeChoice.accountId || null));
+      setSpecsNote(runtimeChoice.accountId
+        ? '已查询所选 Google 账号的 Colab：有申请资格不等于现在一定有空闲 GPU。'
+        : '已查询 Google Colab：有申请资格不等于现在一定有空闲 GPU。');
     });
   }
 

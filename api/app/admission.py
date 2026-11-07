@@ -100,13 +100,27 @@ def _validate_allocation(repo, user, policy: dict) -> dict:
 def _google_status(repo, owner_id, account_id):
     from .gpu.google import GoogleService
 
-    service = GoogleService(repo, owner_id)
+    try:
+        service = GoogleService(repo, owner_id, account_id=account_id)
+    except TypeError:
+        service = GoogleService(repo, owner_id)
     try:
         return service.status(account_id=account_id)
     except TypeError:
-        # v0.1 service compatibility; v0.2's account-aware implementation
-        # accepts the keyword and is always preferred above.
+        # GoogleService(repo, owner_id, account_id=...) sets self.account_id
+        # in __init__ and exposes status() without arguments.
         return service.status()
+
+
+def _resolve_drive_account_id(repo, owner_id, account_id):
+    if not account_id:
+        return None
+    try:
+        from .gpu.accounts import AccountService
+
+        return AccountService(repo, owner_id).resolve_drive_account_id(account_id)
+    except Exception:
+        return account_id
 
 
 def admit_job(st, user, body, key, *, validate_only=False):
@@ -131,6 +145,8 @@ def admit_job(st, user, body, key, *, validate_only=False):
         if os.getenv("GPU_REAL_RETENTION_VERIFIED") != "1" and os.getenv("GPU_REAL_RETENTION_TEST_ENABLED") != "1":
             raise APIError("REAL_LIFECYCLE_UNVERIFIED", "真实 GPU 的智能/保留生命周期尚未完成真机验证", 503)
     workflow = registry.get_workflow(user["id"], body["workflow_key"], body["workflow_version"])
+    if workflow is None:
+        raise APIError("WORKFLOW_UNPUBLISHED", "工作流未发布或与模型不匹配", 404)
     if workflow.get("state") != "published" or workflow["model_id"] != body["model_id"]:
         raise APIError("WORKFLOW_UNPUBLISHED", "工作流未发布或与模型不匹配")
     model = next((m for m in registry.models(user["id"]) if m["model_id"] == body["model_id"]), None)
@@ -164,6 +180,7 @@ def admit_job(st, user, body, key, *, validate_only=False):
         "model_revision": model.get("revision"),
         "dependency_lock": workflow["manifest"].get("dependencies", {}),
     }
+    baseline = None
     if policy["provider"] == "colab":
         if not workflow.get("review_approved") or workflow.get("smoke_test_kind") != "real":
             raise APIError("REVIEW_REQUIRED", "真实工作流尚未通过后台审核及真实冒烟")
@@ -173,6 +190,18 @@ def admit_job(st, user, body, key, *, validate_only=False):
         status = _google_status(repo, user["id"], policy.get("account_id"))
         if not status["colab"]["connected"]:
             raise APIError("GOOGLE_NOT_CONNECTED", "请先授权对应 Google Colab 账户")
+        # Baseline balance so the cleanup stage can measure the real spend. Best effort:
+        # a failed sample must never block admission.
+        from .gpu import ccu
+
+        baseline = ccu.maybe_sample_balance(repo, user["id"], policy.get("account_id"))
+    baseline_fields: dict = {}
+    if policy["provider"] == "colab" and baseline:
+        baseline_fields = {
+            "ccu_before": baseline["balance"],
+            "ccu_before_at": baseline["at"],
+            "ccu_before_source": "google_balance",
+        }
     # After the published stamp, so the curated LoRA weight files stay in the manifest the runtime restores.
     if body.get("loras"):
         _apply_loras(repo, user, workflow, body["loras"], snapshot, policy["provider"])
@@ -180,6 +209,7 @@ def admit_job(st, user, body, key, *, validate_only=False):
         return {**body, "execution_policy": policy,
                 "requested_account_id": policy.get("account_id"),
                 "requested_instance_id": policy.get("instance_id"),
+                **({"drive_account_id": _resolve_drive_account_id(repo, user["id"], policy.get("account_id"))} if policy.get("account_id") else {}),
                 "snapshot": snapshot, "params": params,
                 "resolved_seed": params.get("seed"),
                 "max_runtime_minutes": min(policy["max_runtime_minutes"], cfg.max_runtime_minutes),
@@ -192,6 +222,8 @@ def admit_job(st, user, body, key, *, validate_only=False):
             "execution_policy": policy,
             "requested_account_id": policy.get("account_id"),
             "requested_instance_id": policy.get("instance_id"),
+            **(baseline_fields),
+            **({"drive_account_id": _resolve_drive_account_id(repo, user["id"], policy.get("account_id"))} if policy.get("account_id") else {}),
             "snapshot": snapshot,
             "params": params,
             "resolved_seed": params.get("seed"),

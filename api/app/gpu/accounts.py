@@ -29,6 +29,8 @@ class AccountService:
             "alias",
             "enabled",
             "allow_allocation",
+            "drive_account_id",
+            "drive_account_alias",
             "projects",
             "workflows",
             "budget",
@@ -43,7 +45,7 @@ class AccountService:
             "last_checked_at",
         }
     )
-    MUTABLE_FIELDS = frozenset({"alias", "enabled", "allow_allocation", "projects", "workflows", "budget", "strategy"})
+    MUTABLE_FIELDS = frozenset({"alias", "enabled", "allow_allocation", "drive_account_id", "projects", "workflows", "budget", "strategy"})
     ACTIVE_INSTANCE_STATES = frozenset(
         {"requested", "allocating", "ready", "busy", "retained_idle", "releasing", "unknown", "cleanup_pending", "quarantined"}
     )
@@ -126,7 +128,7 @@ class AccountService:
         account_id = self.default_account_id(self.owner_id)
         data = {
             "account_id": account_id,
-            "alias": "Google账号",
+            "alias": "历史Google账号",
             "enabled": True,
             "allow_allocation": False,
             "projects": [],
@@ -154,28 +156,87 @@ class AccountService:
     def _clean_text(value: Any, limit: int, default: str = "") -> str:
         return str(value if value is not None else default).strip()[:limit]
 
-    def _status(self, account_id: str, enabled: bool) -> tuple[str, dict[str, dict]]:
+    def _validate_drive_account(self, drive_account_id: Any, *, self_account_id: str | None = None) -> tuple[str | None, dict | None]:
+        if drive_account_id in (None, ""):
+            return None, None
+        if not isinstance(drive_account_id, str):
+            raise APIError("VALIDATION_ERROR", "drive_account_id必须为字符串或null", 422)
+        target_id = drive_account_id.strip()
+        if not target_id or (self_account_id and target_id == self_account_id):
+            return None, None
+        self._ensure_default()
+        target = self._get(target_id)
+        if not target:
+            raise APIError("NOT_FOUND", "绑定的Drive账号不存在或不属于当前用户", 404)
+        resolved_id = str(target.get("account_id") or target.get("id"))
+        if target.get("drive_account_id"):
+            raise APIError("VALIDATION_ERROR", "不支持链式绑定Drive账号，请直接绑定拥有Drive授权的账号", 422)
+        from .google import GoogleService
+
+        drive_status = GoogleService(self.repo, self.owner_id, account_id=resolved_id).status().get("drive") or {}
+        if not drive_status.get("connected"):
+            raise APIError("DRIVE_ACCOUNT_UNAVAILABLE", "目标账号尚未连接Google Drive，无法作为共享存储盘", 409)
+        return resolved_id, target
+
+    def resolve_drive_account_id(self, account_id: str | None) -> str | None:
+        if not account_id:
+            return account_id
+        row = self._get(account_id)
+        if not row:
+            return account_id
+        delegated = row.get("drive_account_id")
+        if isinstance(delegated, str) and delegated.strip() and delegated.strip() != account_id:
+            target = self._get(delegated.strip())
+            if target:
+                return str(target.get("account_id") or target.get("id"))
+        return account_id
+
+    def _status(self, account_id: str, enabled: bool, drive_account_id: str | None = None) -> tuple[str, dict[str, dict], str | None]:
         from .google import GoogleService
 
         google = GoogleService(self.repo, self.owner_id, account_id=account_id)
         authorization = google.status()
+        drive_alias = None
+        if isinstance(drive_account_id, str) and drive_account_id.strip() and drive_account_id.strip() != account_id:
+            target = self._get(drive_account_id.strip())
+            if target:
+                target_id = str(target.get("account_id") or target.get("id"))
+                drive_alias = self._clean_text(target.get("alias"), 80, "主账号")
+                target_drive = GoogleService(self.repo, self.owner_id, account_id=target_id).status().get("drive") or {}
+                authorization["drive"] = {
+                    **target_drive,
+                    "delegated_to": target_id,
+                    "delegated_alias": drive_alias,
+                }
+            else:
+                authorization["drive"] = {
+                    "connected": False,
+                    "configured": authorization.get("drive", {}).get("configured", False),
+                    "expires_at": None,
+                    "delegated_to": drive_account_id.strip(),
+                    "message": "绑定的Drive账号不存在，请重新选择",
+                }
         if not enabled:
-            return "disabled", authorization
+            return "disabled", authorization, drive_alias
         if any(value.get("message") for value in authorization.values()):
-            return "needs_reauth", authorization
+            return "needs_reauth", authorization, drive_alias
         if any(value.get("connected") for value in authorization.values()):
-            return "connected", authorization
-        return "not_connected", authorization
+            return "connected", authorization, drive_alias
+        return "not_connected", authorization, drive_alias
 
     def _public(self, row: dict) -> dict:
         account_id = str(row.get("account_id") or row.get("id"))
-        status, authorization = self._status(account_id, row.get("enabled", True) is not False)
+        raw_drive_id = row.get("drive_account_id")
+        drive_account_id = raw_drive_id.strip() if isinstance(raw_drive_id, str) and raw_drive_id.strip() and raw_drive_id.strip() != account_id else None
+        status, authorization, drive_alias = self._status(account_id, row.get("enabled", True) is not False, drive_account_id)
         instances = [item for item in self._rows("instances") if item.get("account_id") == account_id]
         result = {
             "account_id": account_id,
             "alias": self._clean_text(row.get("alias"), 80, "未命名账号"),
             "enabled": row.get("enabled", True) is not False,
             "allow_allocation": bool(row.get("allow_allocation", False)),
+            "drive_account_id": drive_account_id,
+            "drive_account_alias": drive_alias,
             "projects": list(row.get("projects") or []),
             "workflows": list(row.get("workflows") or []),
             "budget": dict(row.get("budget") or {}) if isinstance(row.get("budget") or {}, dict) else row.get("budget"),
@@ -214,11 +275,13 @@ class AccountService:
         if not alias:
             raise APIError("VALIDATION_ERROR", "账号别名不能为空", 422)
         account_id = str(uuid.uuid4())
+        drive_account_id, _ = self._validate_drive_account(body.get("drive_account_id"), self_account_id=account_id)
         data = {
             "account_id": account_id,
             "alias": alias,
             "enabled": body.get("enabled", True) is not False,
             "allow_allocation": bool(body.get("allow_allocation", False)),
+            "drive_account_id": drive_account_id,
             "projects": [self._clean_text(item, 128) for item in body.get("projects", [])] if isinstance(body.get("projects", []), list) else [],
             "workflows": [self._clean_text(item, 128) for item in body.get("workflows", [])] if isinstance(body.get("workflows", []), list) else [],
             "budget": body.get("budget") if isinstance(body.get("budget"), dict) else {},
@@ -250,6 +313,8 @@ class AccountService:
             raise APIError("VALIDATION_ERROR", "projects必须为数组", 422)
         if "workflows" in patch and not isinstance(patch["workflows"], list):
             raise APIError("VALIDATION_ERROR", "workflows必须为数组", 422)
+        if "drive_account_id" in patch:
+            patch["drive_account_id"], _ = self._validate_drive_account(patch["drive_account_id"], self_account_id=account_id)
         updated = self.repo.update("accounts", row.get("id", account_id), patch, self.owner_id)
         return self._save_operation(idempotency_key, {"account_id": account_id, **body}, self._public(updated), operation="update")
 

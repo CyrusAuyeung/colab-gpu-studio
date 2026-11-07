@@ -83,7 +83,35 @@ export interface GpuJob {
 }
 export interface GpuEvent { id?: string; state?: string; event_type?: string; message?: string; progress?: number; created_at?: string; payload?: Record<string, unknown>; [key: string]: unknown; }
 export interface GalleryAsset { id: string; project_id: string; mime: string; filename?: string; thumbnail_url?: string; download_url?: string; favorite?: boolean; gpu_job_id?: string; source_job_id?: string; mock?: boolean; metadata?: Record<string, unknown>; [key: string]: unknown; }
-export interface GpuUsage { estimated_units?: number | null; actual_units?: number | null; unit_rate?: number | null; daily_limit?: number | null; monthly_limit?: number | null; max_runtime_minutes?: number | null; active_runtimes?: number | null; [key: string]: unknown; }
+export interface CcuSnapshot { alias?: string | null; balance?: number | null; rate?: number | null; assignments?: number | null; active_jobs?: number | null; active_leases?: number | null; sampled_at?: number | null; error?: string; }
+export interface CcuAnomaly { account_id: string; alias?: string | null; assignments?: number | null; first_seen?: number | null; last_seen?: number | null; resolved_at?: number | null; }
+export interface UsageReconciliationRow { job_id?: string; state?: string | null; estimated_units?: number | null; actual_units?: number | null; ccu_attribution?: string | null; ccu_source?: string | null; }
+export interface GpuUsage {
+  estimated_units?: number | null;
+  actual_units?: number | null;
+  unit_rate?: number | null;
+  daily_limit?: number | null;
+  monthly_limit?: number | null;
+  max_runtime_minutes?: number | null;
+  active_runtimes?: number | null;
+  reconciliation?: {
+    measured_jobs?: number;
+    unmeasured_jobs?: number;
+    measured_actual_units?: number | null;
+    measured_estimated_units?: number | null;
+    variance_units?: number | null;
+    recent?: UsageReconciliationRow[];
+  };
+  ccu?: {
+    accounts?: number;
+    total_balance?: number | null;
+    assignments?: number;
+    sampled_at?: number | null;
+    snapshots?: Record<string, CcuSnapshot>;
+    anomalies?: CcuAnomaly[];
+  };
+  [key: string]: unknown;
+}
 export interface GpuSettings { provider_default?: Provider; real_enabled?: boolean; google?: { colab?: { connected?: boolean; configured?: boolean; scopes?: string[] }; drive?: { connected?: boolean; configured?: boolean; scopes?: string[] } }; budget?: Record<string, unknown>; storage?: string; [key: string]: unknown; }
 export interface ComputeSpec { id?: string; name?: string; provider?: Provider; gpu?: string; vram_gb?: number; available?: boolean; reason?: string; [key: string]: unknown; }
 export interface WorkflowBundle { manifest: GpuManifest; api_graph: Record<string, unknown>; object_info: Record<string, unknown>; editable_graph?: Record<string, unknown>; }
@@ -201,7 +229,11 @@ export const retryGpuJob = (id: string, idempotencyKey: string) => apiFetch<GpuJ
 export const getGpuGallery = (projectId: string) => apiFetch<GalleryAsset[]>(`/api/gpu/gallery?project_id=${encodeURIComponent(projectId)}`);
 export const getGpuUsage = () => apiFetch<GpuUsage>('/api/gpu/usage');
 export const getGpuSettings = () => apiFetch<GpuSettings>('/api/gpu/settings');
-export const getGpuComputeSpecs = (provider: Provider) => apiFetch<ComputeSpec[]>(`/api/gpu/compute/specs?provider=${encodeURIComponent(provider)}`);
+export const getGpuComputeSpecs = (provider: Provider, accountId?: string | null) => {
+  const query = `provider=${encodeURIComponent(provider)}`;
+  const bound = accountId ? `&account_id=${encodeURIComponent(accountId)}` : '';
+  return apiFetch<ComputeSpec[]>(`/api/gpu/compute/specs?${query}${bound}`);
+};
 export async function startGoogleAuth(purpose: 'drive' | 'colab'): Promise<string> {
   const result = await apiFetch<{ authorization_url?: string }>('/api/gpu/auth/google/start', post({ purpose }));
   if (!result.authorization_url) throw new ApiError('Google OAuth 响应没有 authorization_url');

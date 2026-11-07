@@ -81,16 +81,41 @@ def usage(st, owner):
     rows = repo.list("usage", owner)
     real = [r for r in rows if not r.get("mock") and not r.get("simulated") and r.get("provider") != "mock"]
     estimate = sum(float(r.get("units_estimate", r.get("units", 0)) or 0) for r in real)
-    actual_rows = [r.get("units_actual") for r in real if r.get("units_actual") is not None]
     daily = sum(
         float(r.get("units_estimate", r.get("units", 0)) or 0)
         for r in real
         if float(r.get("created_epoch", 0)) > now - 86400
     )
     leases = [r for r in repo.list("leases", owner) if r.get("state") != "deleted"]
+    measured = [r for r in real if r.get("units_actual") is not None]
+    measured_actual = sum(float(r.get("units_actual") or 0) for r in measured)
+    measured_estimate = sum(float(r.get("units_estimate", r.get("units", 0)) or 0) for r in measured)
+    from .gpu import ccu
+
+    ccu_state = ccu.read_state()
+    recent = []
+    jobs_sorted = sorted(
+        repo.list("jobs", owner), key=lambda item: str(item.get("updated_at") or ""), reverse=True
+    )
+    for job in jobs_sorted[:12]:
+        if job.get("provider") == "mock":
+            continue
+        recent.append(
+            {
+                "job_id": job.get("id"),
+                "state": job.get("state"),
+                "finished_at": job.get("stopped_at") or job.get("updated_at"),
+                "estimated_units": job.get("estimated_units"),
+                "actual_units": job.get("actual_units"),
+                "ccu_before": job.get("ccu_before"),
+                "ccu_after": job.get("ccu_after"),
+                "ccu_attribution": job.get("ccu_attribution"),
+                "ccu_source": job.get("ccu_source"),
+            }
+        )
     return {
         "estimated_units": estimate if cfg.unit_rate is not None else None,
-        "actual_units": sum(actual_rows) if actual_rows else None,
+        "actual_units": measured_actual if measured else None,
         "daily_estimated_units": daily if cfg.unit_rate is not None else None,
         "unit_rate": cfg.unit_rate,
         "rate_unit": "compute_units_per_minute",
@@ -101,7 +126,24 @@ def usage(st, owner):
         "max_runtime_minutes": cfg.max_runtime_minutes,
         "active_runtimes": len(leases),
         "ledger": rows,
-        "notice": "费率为管理员手工估算；实际扣费以 Google 账户为准。Mock 不创建 GPU，不产生真实点数消费。",
+        "reconciliation": {
+            "measured_jobs": len(measured),
+            "unmeasured_jobs": len(real) - len(measured),
+            "measured_actual_units": round(measured_actual, 6) if measured else None,
+            "measured_estimated_units": round(measured_estimate, 6) if measured else None,
+            "variance_units": round(measured_actual - measured_estimate, 6) if measured else None,
+            "recent": recent,
+        },
+        "ccu": {
+            **ccu.summarize(ccu_state.get("snapshots") or {}),
+            "sampled_at": ccu_state.get("updated_at"),
+            "snapshots": ccu_state.get("snapshots") or {},
+            "anomalies": ccu_state.get("anomalies") or [],
+        },
+        "notice": (
+            "月费/实扣以 Google 账户为准：实测值取任务前后余额差；"
+            "估算值按管理员费率推算，可能与实际不一致。Mock 不创建 GPU，不产生真实点数消费。"
+        ),
     }
 
 
@@ -689,7 +731,11 @@ def get_settings(request: Request, user=Depends(current_user), st=Depends(get_st
 
 @router.get("/compute/specs")
 def compute_specs(
-    request: Request, provider: str = "mock", user=Depends(current_user), st=Depends(get_store)
+    request: Request,
+    provider: str = "mock",
+    account_id: str | None = None,
+    user=Depends(current_user),
+    st=Depends(get_store),
 ):
     if provider == "mock":
         return ok(MockColabProvider().list_specs(), request)
@@ -702,7 +748,7 @@ def compute_specs(
     from .gpu.colab import GoogleColabProvider
 
     try:
-        return ok(GoogleColabProvider(Repository(st), user["id"]).list_specs(), request)
+        return ok(GoogleColabProvider(Repository(st), user["id"], account_id=account_id or None).list_specs(), request)
     except APIError:
         raise
     except Exception as exc:
@@ -710,10 +756,15 @@ def compute_specs(
 
 
 @router.get("/compute/subscription")
-def subscription(request: Request, user=Depends(current_user), st=Depends(get_store)):
+def subscription(
+    request: Request,
+    account_id: str | None = None,
+    user=Depends(current_user),
+    st=Depends(get_store),
+):
     from .gpu.colab import GoogleColabProvider
 
-    return ok(GoogleColabProvider(Repository(st), user["id"]).subscription(), request)
+    return ok(GoogleColabProvider(Repository(st), user["id"], account_id=account_id or None).subscription(), request)
 
 
 @router.post("/admin/compute/stop")
