@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+from urllib.parse import parse_qs, urlparse
+
 import httpx
-from app import oauth_config_routes
+import pytest
+from app import account_routes, oauth_config_routes
 from app.common import APIError, current_user, get_store
 from app.config import settings
 from app.db import Store
+from app.gpu.accounts import AccountService
 from app.gpu.google import GoogleService
 from app.gpu.repository import Repository
 from app.security import decrypt_secret, encrypt_secret
@@ -74,6 +78,81 @@ def test_callback_uses_state_owner_database_client(monkeypatch, tmp_path):
     service.callback("code", started["state"])
     assert seen["client_id"] == CLIENT_ID
     assert seen["client_secret"] == "db-secret"
+
+
+@pytest.mark.parametrize("purpose", ["colab", "drive"])
+def test_new_account_auth_uses_owner_web_config(monkeypatch, tmp_path, purpose):
+    for name in ("GPU_GOOGLE_CLIENT_ID", "GPU_GOOGLE_CLIENT_SECRET", "GPU_GOOGLE_SECRET"):
+        monkeypatch.delenv(name, raising=False)
+    c, store = client(monkeypatch, tmp_path, {"id": "admin", "role": "admin"})
+    c.app.include_router(account_routes.router)
+    c.app.state.store = store
+    saved = c.post("/api/gpu/auth/google/config", json={
+        "confirmed": True, "client_id": CLIENT_ID, "client_secret": "owner-web-secret",
+    })
+    assert saved.status_code == 200
+    assert c.get("/api/gpu/auth/google/config").json()["data"]["configured"] is True
+    repo = Repository(store)
+    account = AccountService(repo, "admin").create({"alias": "New account"}, "new-account")
+    path = f"/api/gpu/accounts/{account['account_id']}/auth/{purpose}/start"
+    headers = {"Idempotency-Key": f"auth-{purpose}"}
+    response = c.post(path, json={"purpose": purpose}, headers=headers)
+    assert response.status_code == 200, response.text
+    started = response.json()["data"]
+    assert parse_qs(urlparse(started["authorization_url"]).query)["client_id"] == [CLIENT_ID]
+    assert c.post(path, json={"purpose": purpose}, headers=headers).json()["data"] == started
+    seen = {}
+
+    def handler(request):
+        seen.update(dict(httpx.QueryParams(request.content.decode())))
+        return httpx.Response(200, json={"access_token": "access", "refresh_token": "refresh", "expires_in": 3600})
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as transport:
+        result = GoogleService(repo, None, client=transport).callback("code", started["state"])
+    assert result["account_id"] == account["account_id"]
+    assert seen["client_id"] == CLIENT_ID
+    assert seen["client_secret"] == "owner-web-secret"
+
+
+def test_account_specific_oauth_application_takes_precedence(monkeypatch, tmp_path):
+    c, store = client(monkeypatch, tmp_path, {"id": "admin", "role": "admin"})
+    assert c.post("/api/gpu/auth/google/config", json={
+        "confirmed": True, "client_id": CLIENT_ID, "client_secret": "owner-web-secret",
+    }).status_code == 200
+    repo = Repository(store)
+    repo.create("credentials", "admin", {
+        "provider": "google", "purpose": "oauth_client_config", "account_id": "account-a",
+        "client_id": "account-specific.apps.googleusercontent.com",
+        "encrypted_client_secret": encrypt_secret("account-secret"),
+    })
+    service = GoogleService(repo, "admin", account_id="account-a")
+    try:
+        started = service.start("drive")
+        assert parse_qs(urlparse(started["authorization_url"]).query)["client_id"] == [
+            "account-specific.apps.googleusercontent.com",
+        ]
+    finally:
+        service.close()
+
+
+@pytest.mark.parametrize("owner, binding", [("other-owner", {}), ("admin", {"account_id": "other-account"}), ("admin", {"revoked": True})])
+def test_shared_oauth_config_does_not_cross_security_boundaries(monkeypatch, tmp_path, owner, binding):
+    from app.gpu.google import GoogleConfigurationError
+
+    for name in ("GPU_GOOGLE_CLIENT_ID", "GPU_GOOGLE_CLIENT_SECRET", "GPU_GOOGLE_SECRET"):
+        monkeypatch.delenv(name, raising=False)
+    _, store = client(monkeypatch, tmp_path, {"id": "admin", "role": "admin"})
+    repo = Repository(store)
+    repo.create("credentials", owner, {
+        "provider": "google", "purpose": "oauth_client_config", "client_id": CLIENT_ID,
+        "encrypted_client_secret": encrypt_secret("not-shared"), **binding,
+    })
+    service = GoogleService(repo, "admin", account_id="new-account")
+    try:
+        with pytest.raises(GoogleConfigurationError):
+            service.start("drive")
+    finally:
+        service.close()
 
 
 def test_connected_google_client_cannot_be_replaced(monkeypatch, tmp_path):

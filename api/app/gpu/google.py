@@ -114,9 +114,13 @@ class GoogleService:
             row for row in self._list("credentials", owner)
             if row.get("provider") == "google"
             and row.get("purpose") == "oauth_client_config"
-            and self._account_matches(row, account_id)
             and not row.get("revoked")
         ]
+        # Web setup saves an owner-wide OAuth application, not an account token.
+        # Prefer an account-specific application, then the same owner's shared
+        # application. Never borrow another account's app or another owner's app.
+        scoped = [row for row in rows if self._account_matches(row, account_id)]
+        rows = scoped or [row for row in rows if row.get("account_id") in (None, "")]
         if not rows:
             return None
         row = rows[0]

@@ -1,6 +1,6 @@
 **English** | [简体中文](README.md)
 
-> Current version: 0.2.0. Supports Google multi-account directory, Instance Center, Retain lifecycle mode, and controlled workbench. See [docs/RELEASE_NOTES_0.2.0.md](docs/RELEASE_NOTES_0.2.0.md) and [changelog](更新说明_main_2026-11-05.md) for changes. Offline/Mock acceptance documents remain in docs/; see the [offline implementation notes](docs/OFFLINE_IMPLEMENTATION.md).
+> Current version: 0.2.10. Fixes new-account authorization failing after OAuth application setup. Also includes Colab CLI compute accounts, independent Drive account binding, and CU reconciliation. See the [0.2.10 release notes](docs/RELEASE_NOTES_0.2.10.md) and [offline implementation notes](docs/OFFLINE_IMPLEMENTATION.md).
 
 # Colab GPU Studio
 
@@ -10,8 +10,8 @@ The frontend is a React single-page app optimized for mobile touch controls, and
 
 ## Downloads and Online Demo
 
-- **Latest version**: [0.2.6 release](https://github.com/TizenryA/colab-gpu-studio/releases/tag/v0.2.6) (source + release notes).
-- **Prebuilt multi-platform bundles**: the [0.2.6 release assets](https://github.com/TizenryA/colab-gpu-studio/releases/tag/v0.2.6) ship Windows x86_64 / Linux x86_64 / macOS x64 / macOS arm64 / Android Termux packages that launch as-is without installing Python or Node; checksums are in `SHA256SUMS.txt`.
+- **Latest version**: [0.2.10 release](https://github.com/TizenryA/colab-gpu-studio/releases/tag/v0.2.10) (source + release notes).
+- **Prebuilt multi-platform bundles**: the [0.2.10 release assets](https://github.com/TizenryA/colab-gpu-studio/releases/tag/v0.2.10) ship Windows x86_64 / Linux x86_64 / macOS x64 / macOS arm64 / Android Termux packages. Desktop bundles include Python and dependencies; Termux installs its native dependencies online at first launch; checksums are in `SHA256SUMS.txt`.
 - **Read-only UI demo**: [Open the Cloudflare Workers demo](https://gpu-colab-studio-demo.tizenry.tech). Public demo password: `demo-readonly`.
 - The demo uses the **original 0.1.31-dev.8 frontend** with a separate Mock data snapshot. It does not connect to the production site, Google, or a real GPU, and does not consume CU. Generation, uploads, edits, deletion, and authorization are unavailable; download and self-host the full version for complete functionality.
 - [Demo details and more screenshots](docs/DEMO.md). The screenshots below were captured in a real browser on the live demo site; they are not design mockups.
