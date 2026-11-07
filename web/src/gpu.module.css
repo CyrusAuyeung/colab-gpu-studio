@@ -269,3 +269,13 @@
 .oauthSteps { margin: 0; padding-left: 20px; display: grid; gap: 6px; font-size: 0.82rem; color: var(--text-2); }
 .oauthScope { display: block; padding: 8px 10px; margin-top: 6px; border-radius: var(--r-sm); background: var(--bg); border: 1px solid var(--line); font-size: 0.74rem; overflow-wrap: anywhere; }
 .oauthConfirm { display: flex; align-items: flex-start; gap: 10px; font-size: 0.82rem; }
+
+/* 启用向导（内置草稿 → 可用工作流） */
+.activationPanel { display: grid; gap: 10px; padding: 12px; border-top: 1px solid var(--line); }
+.activationSteps { display: grid; gap: 6px; margin: 0; padding: 0; list-style: none; }
+.activationSteps li { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 13px; }
+.activationSteps li[data-state='done'] { opacity: .72; }
+.activationSteps li[data-state='failed'] { color: #a63b32; }
+.notice { padding: 10px 12px; border: 1px solid var(--line); }
+.errorText { font-size: 13px; color: #a63b32; }
+.checkline { display: flex; align-items: center; gap: 8px; font-size: 13px; }

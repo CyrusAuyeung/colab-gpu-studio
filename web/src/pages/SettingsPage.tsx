@@ -14,7 +14,7 @@ import { cuNumber } from '../lib/ui-helpers';
 
 export function SettingsPanel({
   settings, usage, specs, specsNote = '', workflows, loading, error, accounts = [], onAccountsChange, instances = [], onRefreshInstances,
-  onConnect, onDisconnect, onCheck, onStop, onImport, onValidate, onPublish, onRollback, onLogout, onBack,
+  onConnect, onDisconnect, onCheck, onStop, onImport, onValidate, onPublish, onRollback, onActivated, onLogout, onBack,
 }: {
   settings: GpuSettings | null;
   usage?: GpuUsage | null;
@@ -31,6 +31,7 @@ export function SettingsPanel({
   onValidate: (workflow: GpuWorkflow) => void;
   onPublish: (workflow: GpuWorkflow) => void;
   onRollback: (workflow: GpuWorkflow) => void;
+  onActivated?: () => void;
   onLogout: () => void;
   onBack?: () => void;
   instances?: GpuInstance[];
@@ -54,7 +55,7 @@ export function SettingsPanel({
           <button type="button" className={styles.backBtn} onClick={() => setView('main')}><ChevronLeft size={18} strokeWidth={1.6} aria-hidden />设置</button>
           <h2>工作流与模型</h2>
         </div>
-        <WorkflowsPanel workflows={workflows} onImport={onImport} onValidate={onValidate} onPublish={onPublish} onRollback={onRollback} />
+        <WorkflowsPanel workflows={workflows} onImport={onImport} onValidate={onValidate} onPublish={onPublish} onRollback={onRollback} onActivated={onActivated || (() => undefined)} />
         {error && <p className="status error" role="alert">{error}</p>}
       </div>
     );

@@ -10,7 +10,8 @@ The frontend is a React single-page app optimized for mobile touch controls, and
 
 ## Downloads and Online Demo
 
-- **Download the full version**: [0.2.0 multi-platform release](https://github.com/TizenryA/colab-gpu-studio/releases/tag/v0.2.0). See the release asset descriptions for installation instructions and the scope of verification on each platform.
+- **Latest version**: [0.2.6 release](https://github.com/TizenryA/colab-gpu-studio/releases/tag/v0.2.6) (source + release notes).
+- **Prebuilt multi-platform bundles**: the [0.2.6 release assets](https://github.com/TizenryA/colab-gpu-studio/releases/tag/v0.2.6) ship Windows x86_64 / Linux x86_64 / macOS x64 / macOS arm64 / Android Termux packages that launch as-is without installing Python or Node; checksums are in `SHA256SUMS.txt`.
 - **Read-only UI demo**: [Open the Cloudflare Workers demo](https://gpu-colab-studio-demo.tizenry.tech). Public demo password: `demo-readonly`.
 - The demo uses the **original 0.1.31-dev.8 frontend** with a separate Mock data snapshot. It does not connect to the production site, Google, or a real GPU, and does not consume CU. Generation, uploads, edits, deletion, and authorization are unavailable; download and self-host the full version for complete functionality.
 - [Demo details and more screenshots](docs/DEMO.md). The screenshots below were captured in a real browser on the live demo site; they are not design mockups.
@@ -30,15 +31,16 @@ The frontend is a React single-page app optimized for mobile touch controls, and
 
 1. **Saving CU comes first**: The ComfyUI environment and tens of gigabytes of large-model weights are cached in your Google Drive. Let an inexpensive CPU runtime handle the heavy lifting of downloading models and setting up the environment. The expensive GPU (T4 / L4) only does three things after startup: **restore the environment → sample the output → shut down and delete the instance immediately**.
 2. **Comfortable image and video creation on your phone**: No more struggling with dense ComfyUI node connections in a mobile browser or watching a Colab tab to prevent disconnections. The frontend automatically renders forms from each workflow, while queued jobs keep running in the background even after you close the browser.
-3. **Four refined workflow templates included**: Built-in templates cover Krea+MOSS dual-sampling image generation, MOSS text-to-image, MiniMax H3 image-to-video with first and last frames, and MiniMax H3 multi-reference image-to-video (supporting up to 6 reference images, 8-step Turbo v1.1, 1.2x latent refinement, a seamless anime VAE, and multiple SFW LoRAs for motion, camera movement, and consistent visual style).
+3. **One-click enablement in the browser**: built-in templates start as drafts; the Workflows page walks you through validation, license confirmation, weight locking, a real GPU smoke test and publishing, polling automatically and stopping at the failing step.
+4. **Four refined workflow templates included**: Built-in templates cover Krea+MOSS dual-sampling image generation, MOSS text-to-image, MiniMax H3 image-to-video with first and last frames, and MiniMax H3 multi-reference image-to-video (supporting up to 6 reference images, 8-step Turbo v1.1, 1.2x latent refinement, a seamless anime VAE, and multiple SFW LoRAs for motion, camera movement, and consistent visual style).
 
-> **Safety note**: New installations enable only the `demo-mock` offline demo by default (no Google connection and no compute-unit charges). The four built-in real workflows appear as drafts in the workflow list. They are not enabled for use until you connect your own Google OAuth, confirm the model licenses, and complete a test run, preventing an accidental click from burning CU right after installation.
+> **Safety note**: a fresh install only enables the offline `demo-mock` workflow (no Google, no cost). The four real built-in workflows sit in the list as drafts; clicking "enable" and confirming the cost runs one real GPU smoke test (billed per minute) and publishes automatically once it passes. See [built-in workflows](docs/BUILTIN_WORKFLOWS.md).
 
 ## Built-in Workflows
 
 | Workflow | Version | Recommended GPU | Description |
 |---|---|---|---|
-| `krea2-moss-dual-t2i` | 1.0.0 / 1.1.0 | T4 HighRAM | 1.0.0 is the original template; 1.1.0 chains 7 MJ and film-style refinement LoRAs throughout the pipeline to substantially improve image quality |
+| `krea2-moss-dual-t2i` | 1.0.0 / 1.1.1 | T4 HighRAM | 1.0.0 is the original template; 1.1.1 chains 4 publicly downloadable film/MJ texture LoRAs (1.1.0 referenced 7 LoRAs but shipped none of the weight files, so it has been retired) |
 | `moss-image-sft-t2i` | 1.0.0 | T4 | Single-image text-to-image generation with OpenMOSS |
 | `minimax-h3-i2v` | 1.1.0 | L4 | Generate a short video with audio from a first frame and an optional last frame, with an 8-step acceleration LoRA |
 | `minimax-h3-ref2v` | 1.4.0 | L4 | Generate video with audio from up to 6 reference images; choose 4-step, 8-step, refinement, or 20-step modes, with a seamless anime VAE |
@@ -55,9 +57,14 @@ Install Docker, Docker Compose, and Python first (Python is used to generate the
 # 1. Generate your private .env configuration file (replace the domain with your own; leave it unchanged for local use)
 uv run python scripts/init_env.py --site-url https://your-domain
 
-# 2. Start the services (three containers: api / worker / watchdog)
+# 2. Copy your own compose file (port/mount tweaks live here, so the git tree stays clean)
+cp docker-compose.example.yml docker-compose.yml
+
+# 3. Start the services (three containers: api / worker / watchdog)
 docker compose up -d --build
 ```
+
+> Only `docker-compose.example.yml` is tracked; your local `docker-compose.yml` is git-ignored, so changing ports or mounts no longer conflicts with `git pull`. `scripts/deploy.sh` creates it automatically when missing.
 
 By default, the service listens only on the local address `127.0.0.1:8788`. For public access, use Caddy or Nginx as a reverse proxy with HTTPS. All data is stored in the `studio-data` volume. **Do not accidentally run `docker compose down -v`, which deletes the data volume.**
 

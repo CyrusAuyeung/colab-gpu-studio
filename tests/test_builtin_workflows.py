@@ -5,7 +5,7 @@ from app.gpu.repository import Repository
 EXPECTED = {
     ("moss-image-sft-t2i", "1.0.0"),
     ("krea2-moss-dual-t2i", "1.0.0"),
-    ("krea2-moss-dual-t2i", "1.1.0"),
+    ("krea2-moss-dual-t2i", "1.1.1"),
     ("minimax-h3-i2v", "1.1.0"),
     ("minimax-h3-ref2v", "1.4.0"),
 }
@@ -139,3 +139,66 @@ def test_catalog_bootstrap_never_calls_external_services(monkeypatch):
     registry = Registry(Repository(Store("sqlite:///:memory:")))
     registry.bootstrap("offline-owner")
     assert len(registry.workflows("offline-owner")) == 6
+
+
+def test_every_bundled_lora_node_is_shipped_or_refused():
+    """A bundle may not name a LoRA that its manifest does not bring in.
+
+    1.1.0 chained seven LoRAs while shipping none, so every fresh install burned a Colab
+    runtime and then failed with "LoRA 文件没有随任务下发".  The check lives in the bundle
+    loader now, and this test keeps the shipped catalog honest.
+    """
+    from app.gpu import builtin
+
+    for bundle in builtin._bundles():  # noqa: SLF001 - the loader itself is the contract
+        manifest = bundle["manifest"]
+        weights = manifest["dependencies"]["weight_files"]
+        assert not [w for w in weights if w.get("source") == "drive"]
+        shipped = {w.get("target", "").removeprefix("loras/") for w in weights}
+        for node_id, node in bundle["api_graph"].items():
+            if node.get("class_type") == "LoraLoaderModelOnly":
+                assert node["inputs"]["lora_name"] in shipped, (
+                    f"{bundle['workflow_key']} {manifest['version']} node {node_id} "
+                    f"references an unshipped LoRA"
+                )
+
+
+def test_bundle_loader_rejects_unshipped_lora(tmp_path, monkeypatch):
+    import json
+
+    from app.gpu import builtin
+
+    bundle = json.loads(
+        (builtin._ROOT / "krea2-moss-dual-t2i-1.1.1.json").read_text(encoding="utf-8")  # noqa: SLF001
+    )
+    bundle["manifest"]["dependencies"]["weight_files"] = [
+        w for w in bundle["manifest"]["dependencies"]["weight_files"] if not w["target"].startswith("loras/")
+    ]
+    (tmp_path / "broken-1.0.0.json").write_text(json.dumps(bundle, ensure_ascii=False), encoding="utf-8")
+    (tmp_path / "catalog.json").write_text(
+        json.dumps(
+            {
+                "catalog_version": 1,
+                "workflows": [
+                    {
+                        "file": "broken-1.0.0.json",
+                        "workflow_key": bundle["workflow_key"],
+                        "version": bundle["manifest"]["version"],
+                        "model_id": bundle["model_id"],
+                    }
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(builtin, "_ROOT", tmp_path)
+    builtin._bundles.cache_clear()  # noqa: SLF001
+    try:
+        import pytest
+
+        with pytest.raises(ValueError, match="未随包下发的 LoRA"):
+            builtin._bundles()  # noqa: SLF001
+    finally:
+        builtin._bundles.cache_clear()  # noqa: SLF001
+

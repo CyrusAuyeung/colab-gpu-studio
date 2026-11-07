@@ -30,10 +30,11 @@
       "title": "MOSS-Image SFT 文生图"
     },
     {
-      "file": "krea2-moss-dual-t2i-1.1.0.json",
+      "file": "krea2-moss-dual-t2i-1.1.1.json",
       "workflow_key": "krea2-moss-dual-t2i",
-      "version": "1.1.0",
-      "model_id": "krea2-moss-dual"
+      "version": "1.1.1",
+      "model_id": "krea2-moss-dual",
+      "title": "Krea-2 Turbo + MOSS 电影胶片双采（4 个公开 LoRA）"
     }
   ]
 }

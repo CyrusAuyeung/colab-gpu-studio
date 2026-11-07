@@ -86,21 +86,33 @@
       "sha256": "bb8ccb042c300e8453a5aa4ef0797c2c011fae5137dc6eba1442492d8fc535e2",
       "target": "loras/Krea_2_zidiusArt_Melancholy.safetensors",
       "size": 228588904,
-      "note": "请自行合法取得对应权重，按SHA256校验；不提供私人Drive文件ID。"
+      "note": "自行按 SHA256 校验后放入 ComfyUI 的 models/loras/。作者整合包：https://pan.quark.cn/s/695385ff7182 ；C 站：https://civitai.com/models/2334593 。本仓库不分发该权重。",
+      "sources": [
+        "https://pan.quark.cn/s/695385ff7182",
+        "https://civitai.com/models/2334593"
+      ]
     },
     {
       "source": "user-provided",
       "sha256": "9a133e9b1db7a135516b8747ea4cf4e95c70d5fdec0e4e89bb5765504b8eb9dc",
       "target": "loras/feverdream-epoch-07.safetensors",
       "size": 129017224,
-      "note": "请自行合法取得对应权重，按SHA256校验；不提供私人Drive文件ID。"
+      "note": "自行按 SHA256 校验后放入 ComfyUI 的 models/loras/。作者整合包：https://pan.quark.cn/s/695385ff7182 ；C 站：https://civitai.com/models/2675439 。本仓库不分发该权重。",
+      "sources": [
+        "https://pan.quark.cn/s/695385ff7182",
+        "https://civitai.com/models/2675439"
+      ]
     },
     {
       "source": "user-provided",
       "sha256": "1c08050f20869c0be01102118caeeaf9b3d405bd1ec529f67d80495924cbe51d",
       "target": "loras/TJFilmMoss_V1.safetensors",
       "size": 145157296,
-      "note": "请自行合法取得对应权重，按SHA256校验；不提供私人Drive文件ID。"
+      "note": "自行按 SHA256 校验后放入 ComfyUI 的 models/loras/。作者整合包：https://pan.quark.cn/s/695385ff7182 ；C 站：https://civitai.com/models/2840370 。本仓库不分发该权重。",
+      "sources": [
+        "https://pan.quark.cn/s/695385ff7182",
+        "https://civitai.com/models/2840370"
+      ]
     }
   ],
   "custom_nodes": [

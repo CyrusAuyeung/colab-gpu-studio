@@ -1,7 +1,8 @@
-import { useMemo, useRef, useState } from 'react';
+import { Fragment, useMemo, useRef, useState } from 'react';
 import { ChevronDown, Search } from 'lucide-react';
 import type { GpuWorkflow } from '../lib/gpu-api';
 import { Pager } from '../components/ui';
+import { WorkflowActivationPanel } from '../components/WorkflowActivation';
 import styles from '../gpu.module.css';
 import { workflowState } from '../lib/ui-helpers';
 
@@ -12,17 +13,19 @@ const cmp = (a: GpuWorkflow, b: GpuWorkflow) =>
   String(b.workflow_version).localeCompare(String(a.workflow_version), undefined, { numeric: true });
 
 export function WorkflowsPanel({
-  workflows, onImport, onValidate, onPublish, onRollback,
+  workflows, onImport, onValidate, onPublish, onRollback, onActivated,
 }: {
   workflows: GpuWorkflow[];
   onImport: (bundle: string) => void;
   onValidate: (workflow: GpuWorkflow) => void;
   onPublish: (workflow: GpuWorkflow) => void;
   onRollback: (workflow: GpuWorkflow) => void;
+  onActivated: () => void;
 }) {
   const [text, setText] = useState('');
   const [query, setQuery] = useState('');
   const [page, setPage] = useState(0);
+  const [activating, setActivating] = useState<string | null>(null);
   const [openKeys, setOpenKeys] = useState<Set<string>>(new Set());
   const [showAll, setShowAll] = useState<Set<string>>(new Set());
   const fileRef = useRef<HTMLInputElement>(null);
@@ -102,17 +105,33 @@ export function WorkflowsPanel({
                     {shown.map((wf) => {
                       const published = wf.state === 'published';
                       return (
-                        <div className={styles.versionItem} key={wf.id}>
+                        <Fragment key={wf.id}>
+                        <div className={styles.versionItem}>
                           <span className={styles.versionName}>
                             <strong>v{wf.workflow_version}</strong>
                             <span className="pill" data-state={wf.active ? 'active' : wf.state}>{workflowState(wf.state, wf.active)}</span>
                           </span>
                           <span className={styles.versionActions}>
+                            {!published && (
+                              <button className="button small" type="button" onClick={() => setActivating(activating === wf.id ? null : wf.id)}>
+                                {activating === wf.id ? '收起启用向导' : '一键启用'}
+                              </button>
+                            )}
                             {!published && <button className="button secondary small" type="button" onClick={() => onValidate(wf)}>校验</button>}
-                            {!published && <button className="button small" type="button" onClick={() => onPublish(wf)}>发布</button>}
+                            {!published && <button className="button ghost small" type="button" onClick={() => onPublish(wf)}>发布</button>}
                             {published && !wf.active && <button className="button secondary small" type="button" onClick={() => onRollback(wf)}>设为当前</button>}
                           </span>
                         </div>
+                        {activating === wf.id && (
+                          <div className={styles.versionItem}>
+                            <WorkflowActivationPanel
+                              workflow={wf}
+                              onClose={() => setActivating(null)}
+                              onDone={onActivated}
+                            />
+                          </div>
+                        )}
+                        </Fragment>
                       );
                     })}
                     {g.items.length > VERSIONS_SHOWN && (

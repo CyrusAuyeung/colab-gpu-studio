@@ -1,6 +1,6 @@
 **简体中文** | [English](README.en.md)
 
-> 当前版本 0.2.0：支持 Google 多账号目录、实例中心、常开保留（Retain）与受控工作台。变更见 [docs/RELEASE_NOTES_0.2.0.md](docs/RELEASE_NOTES_0.2.0.md) 与 [更新说明_main_2026-11-05.md](更新说明_main_2026-11-05.md)。离线/Mock 验收文档仍在 docs/，见 [离线实施记录](docs/OFFLINE_IMPLEMENTATION.md)。
+> 当前版本 0.2.6：在工作流页可以直接**一键启用**内置模板（校验 → 审查 → 真实冒烟 → 发布全自动），并修复了 Krea2 模板漏带 LoRA 权重的问题。变更见 [docs/RELEASE_NOTES_0.2.6.md](docs/RELEASE_NOTES_0.2.6.md) 与 [0.2.5 说明](docs/RELEASE_NOTES_0.2.5.md)。离线/Mock 验收文档仍在 docs/，见 [离线实施记录](docs/OFFLINE_IMPLEMENTATION.md)。
 
 # Colab GPU Studio
 
@@ -10,7 +10,8 @@
 
 ## 下载与在线演示
 
-- **完整版下载**：[0.2.0 多平台发布](https://github.com/TizenryA/colab-gpu-studio/releases/tag/v0.2.0)。各平台安装方式与验证范围见 Release 附件说明。
+- **最新版本**：[0.2.6 Release](https://github.com/TizenryA/colab-gpu-studio/releases/tag/v0.2.6)（源码 + 更新说明）。
+- **预编译多平台独立包**：[0.2.6 Release 附件](https://github.com/TizenryA/colab-gpu-studio/releases/tag/v0.2.6) 提供 Windows x86_64 / Linux x86_64 / macOS x64 / macOS arm64 / Android Termux 五个包，解压即可启动，无需装 Python 或 Node；SHA-256 见附件里的 `SHA256SUMS.txt`。
 - **只读界面演示**：[打开 Cloudflare Workers 演示站](https://gpu-colab-studio-demo.tizenry.tech)。公开演示密码：`demo-readonly`。
 - 演示站使用 **0.1.31-dev.8 原版前端**，展示独立的 Mock 数据快照，不连接生产站、Google 或真实 GPU，不消耗 CU。生成、上传、修改、删除和授权均不可用；完整功能请下载后自行部署。
 - [演示说明与更多截图](docs/DEMO.md)。以下截图来自线上演示站的实际浏览器，不是设计稿。
@@ -30,15 +31,16 @@
 
 1. **省 CU 是第一生产力**：ComfyUI 环境和几十 GB 的大模型权重全部缓存在你的 Google Drive 里。下模型、装环境这种脏活累活交给便宜的 CPU runtime 去干；贵的 GPU（T4 / L4）开机只做三件事：**还原环境 → 采样出片 → 马上关机删实例**。
 2. **手机上也能舒服捏图/跑视频**：不用在手机浏览器里死磕密密麻麻的 ComfyUI 节点连线，也不用一直盯着 Colab 标签页防断连。前端会根据工作流自动渲染表单，关掉浏览器后台照样排队跑。
-3. **自带 4 套打磨好的工作流模板**：开箱内置 Krea+MOSS 双采出图、MOSS 文生图、MiniMax H3 首尾帧图生视频、MiniMax H3 多参考图生视频（支持最多 6 张参考图、8步 Turbo v1.1、1.2x 潜空间精修、二次元无缝 VAE 及多款 SFW 动作/运镜/画风锁定 LoRA）。
+3. **网页上一键启用，不用敲命令**：内置模板以草稿形式存在，工作流页点「一键启用」按五步向导走完校验、模型许可、权重锁定、真实 GPU 冒烟和发布，冒烟阶段自动轮询，失败会停在那一步告诉你原因。
+4. **自带 4 套打磨好的工作流模板**：开箱内置 Krea+MOSS 双采出图、MOSS 文生图、MiniMax H3 首尾帧图生视频、MiniMax H3 多参考图生视频（支持最多 6 张参考图、8步 Turbo v1.1、1.2x 潜空间精修、二次元无缝 VAE 及多款 SFW 动作/运镜/画风锁定 LoRA）。
 
-> **安全提示**：新安装默认只开启 `demo-mock` 离线演示（不连 Google、不扣点数）。内置的 4 套真实工作流会以“草稿”形式躺在工作流列表里，需要你绑好自己的 Google OAuth、确认模型许可并跑通一次测试后才会正式启用，防止刚装好误触直接烧掉 CU。
+> **安全提示**：新安装默认只开启 `demo-mock` 离线演示（不连 Google、不扣点数）。内置的 4 套真实工作流会以“草稿”形式躺在工作流列表里；点「一键启用」并勾选费用确认后，它会真实开一次 GPU 做冒烟（按分钟计费），通过后才自动发布。详细步骤见[内置工作流说明](docs/BUILTIN_WORKFLOWS.md)。
 
 ## 内置工作流一览
 
 | 工作流 | 版本 | 推荐显卡 | 说明 |
 |---|---|---|---|
-| `krea2-moss-dual-t2i` | 1.0.0 / 1.1.0 | T4 HighRAM | 1.0.0 原模版；1.1.0 全链路串联 7 个 MJ 与胶片精修 LoRA，大幅提升出图画质 |
+| `krea2-moss-dual-t2i` | 1.0.0 / 1.1.1 | T4 HighRAM | 1.0.0 原模版；1.1.1 全链串联 4 个可直接下载的胶片与 MJ 质感 LoRA（1.1.0 曾引用 7 个但未随包下发任何 LoRA 权重，已废弃） |
 | `moss-image-sft-t2i` | 1.0.0 | T4 | OpenMOSS 单张文生图 |
 | `minimax-h3-i2v` | 1.1.0 | L4 | 首帧（可选尾帧）生成有声短视频，带 8 步加速 LoRA |
 | `minimax-h3-ref2v` | 1.4.0 | L4 | 最多 6 张参考图生成有声视频，可选 4步/8步/精修/20步 与二次元无缝 VAE |
@@ -55,9 +57,14 @@
 # 1. 生成你的私密 .env 配置文件（把域名换成你自己的，本地玩就不改）
 uv run python scripts/init_env.py --site-url https://你的域名
 
-# 2. 启动服务（包含 api / worker / watchdog 三个容器）
+# 2. 复制一份属于自己的编排文件（改端口/挂载都在这份里，不会弄脏 git 工作区）
+cp docker-compose.example.yml docker-compose.yml
+
+# 3. 启动服务（包含 api / worker / watchdog 三个容器）
 docker compose up -d --build
 ```
+
+> 仓库里只跟踪 `docker-compose.example.yml`，本地的 `docker-compose.yml` 已在 `.gitignore` 里，改端口或挂载不会再和 `git pull` 打架。`scripts/deploy.sh` 也会在缺失时自动复制一份。
 
 服务默认只监听本机 `127.0.0.1:8788`，公网访问建议用 Caddy 或 Nginx 反代并套上 HTTPS。数据全部存在 `studio-data` 卷里，**千万别手滑敲 `docker compose down -v` 把数据卷删了**。
 

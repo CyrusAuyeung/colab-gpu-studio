@@ -1,6 +1,7 @@
 .env
 .env.*
 !.env.example
+docker-compose.yml
 .venv/
 node_modules/
 dist/

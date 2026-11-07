@@ -688,4 +688,98 @@ def accept_smoke(
     return ok(updated_workflow, request)
 
 
-__all__ = ["accept_smoke", "real_smoke", "review_model", "review_workflow", "router"]
+@router.get("/workflows/{workflow_id}/activation")
+def workflow_activation(
+    workflow_id: str, request: Request, user=Depends(current_user), st=Depends(get_store)
+):  # noqa: B008
+    """Everything the web wizard needs to walk a built-in draft to a usable workflow.
+
+    Read-only: it never approves, allocates GPU or writes evidence.  The wizard still calls
+    the individual reviewed endpoints, one human confirmation at a time.
+    """
+    _admin(user)
+    repo = Repository(st)
+    row = own(repo, "workflows", workflow_id, user)
+    model = next((item for item in repo.list("models", user["id"]) if item.get("model_id") == row.get("model_id")), None)
+    jobs = [
+        job
+        for job in repo.list("jobs", user["id"])
+        if job.get("target_workflow_id") == workflow_id and (job.get("snapshot") or {}).get("workflow_smoke") is True
+    ]
+    jobs.sort(key=lambda job: (job.get("created_at") or 0, str(job.get("id"))), reverse=True)
+    smoke = jobs[0] if jobs else None
+    smoke_state = (smoke or {}).get("state")
+    smoke_done = bool(row.get("smoke_test_passed")) and row.get("smoke_test_kind") == "real"
+    published = row.get("state") == "published"
+    validated = row.get("state") in {"validated", "published"}
+    model_reviewed = bool(model and model.get("review_approved") and model.get("license_accepted"))
+    reviewed = bool(row.get("review_approved"))
+    cfg = GpuConfig.from_env()
+    blockers = []
+    if model is None:
+        blockers.append("找不到该工作流绑定的模型记录")
+    elif not (isinstance(model.get("source"), str) and model.get("license")):
+        blockers.append("模型缺少来源或许可字段，无法完成审查")
+    if not cfg.real_enabled:
+        blockers.append("服务端未开启真实 GPU（GPU_REAL_ENABLED）")
+    elif cfg.unit_rate is None or cfg.unit_rate <= 0:
+        blockers.append("服务端未配置 GPU 计价费率")
+
+    steps = [
+        {"key": "validate", "label": "校验模板", "done": validated},
+        {"key": "model_review", "label": "确认模型来源与许可", "done": model_reviewed},
+        {"key": "workflow_review", "label": "锁定权重与节点", "done": reviewed},
+        {
+            "key": "real_smoke",
+            "label": "真实 GPU 冒烟（≤5 分钟）",
+            "done": smoke_done,
+            "running": bool(smoke_state and smoke_state not in {"completed", "failed", "cancelled"}),
+            "failed": smoke_state == "failed",
+        },
+        {"key": "accept_smoke", "label": "验收冒烟结果", "done": smoke_done},
+        {"key": "publish", "label": "发布并设为当前", "done": published},
+    ]
+    for step in steps:
+        if not step["done"] and not step.get("running") and not step.get("failed"):
+            step["next"] = True
+            break
+    return ok(
+        {
+            "workflow": {
+                "id": row["id"],
+                "workflow_key": row.get("workflow_key"),
+                "version": row.get("workflow_version"),
+                "state": row.get("state"),
+                "active": row.get("active"),
+            },
+            "model": None
+            if model is None
+            else {
+                "model_id": model.get("model_id"),
+                "review_approved": bool(model.get("review_approved")),
+                "license_accepted": bool(model.get("license_accepted")),
+                "enabled": bool(model.get("enabled")),
+                "license": model.get("license"),
+                "source": model.get("source"),
+            },
+            "steps": steps,
+            "smoke": None
+            if smoke is None
+            else {
+                "job_id": smoke.get("id"),
+                "state": smoke_state,
+                "error_code": smoke.get("error_code"),
+                "error_message": smoke.get("error_message"),
+            },
+            "smoke_job_completed": smoke_state == "completed",
+            "smoke_kind": row.get("smoke_test_kind"),
+            "real_enabled": bool(cfg.real_enabled),
+            "max_runtime_minutes": (row.get("manifest") or {}).get("max_runtime_minutes"),
+            "blockers": blockers,
+            "done": published and bool(row.get("active")),
+        },
+        request,
+    )
+
+
+__all__ = ["accept_smoke", "real_smoke", "review_model", "review_workflow", "router", "workflow_activation"]
