@@ -126,8 +126,7 @@ export function WorkflowActivationPanel({
   return (
     <div className={styles.activationPanel}>
       <p className="muted small">
-        这一步会真实分配 GPU 跑一次冒烟（最长 {data?.max_runtime_minutes || 5} 分钟，按分钟计费）。
-        通过后自动发布并设为当前版本。
+        这一步会真实分配 GPU 跑一次冒烟（最长 5 分钟，按分钟计费）。通过后自动发布并设为当前版本。
       </p>
       {data?.blockers.length ? (
         <div className={styles.notice}>
