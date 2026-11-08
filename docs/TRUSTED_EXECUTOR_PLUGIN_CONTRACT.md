@@ -8,7 +8,7 @@
 
 - `executor_factory(job)` 在 `api/app/gpu/compute.py` 中选择执行器；调度器随后调用 `start(handle, job, execution_id)` 和 `poll(handle, job)`。
 - `Scheduler.cancel()` 只写入取消意图；下一 tick 进入 `cleaning_up`，由现有 provider `inspect/delete` 完成租约清理。
-- 因为任务要求不改 `scheduler.py`、`repository.py`、`review_routes.py`，插件的 `cancel()`/`cleanup()` 是受同一租约身份、预算快照和截止时间约束的部署适配接缝，不能自行分配预算、创建租约或删除 runtime。现有调度器不会在本改动中偷偷替换这条权威路径。
+- 调度器在进入清理阶段时，会在同一租约身份、预算快照和截止时间约束下调用可信插件的 `cancel()`（有取消意图时）和 `cleanup()`，并记录成功或失败标记；插件不能自行分配预算或创建租约。物理 Runtime 的 `inspect/delete` 仍由 provider 负责，插件钩子失败也不会接管或绕过 provider 的清理权威。
 
 因此，本实现完成了可测试的部署侧加载路径；通用远端 Laya 控制面仍需在该四方法接缝上提供真实实现和独立验收。
 

@@ -341,13 +341,14 @@ def workflow_graph_preview(
     workflow_key: str,
     request: Request,
     version: int,
+    draft: bool = False,
     user=Depends(current_user),
 ):
-    """Owner-scoped offline graph preview; no instance or Comfy connection."""
+    """Owner-scoped offline graph preview; drafts are read-only and never executable."""
     wb = _workbench(request, None)
     try:
         result = wb.get_reviewed_graph(
-            user["id"], {"workflow_key": workflow_key, "workflow_version": version}
+            user["id"], {"workflow_key": workflow_key, "workflow_version": version, "allow_draft": draft}
         )
     except WorkbenchError as exc:
         raise APIError(exc.code, str(exc), exc.status, exc.retryable) from exc

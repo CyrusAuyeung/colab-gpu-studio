@@ -29,11 +29,12 @@ function smokeStateText(state: string): string {
 }
 
 export function WorkflowActivationPanel({
-  workflow, onClose, onDone,
+  workflow, onClose, onDone, onPreview,
 }: {
   workflow: GpuWorkflow;
   onClose: () => void;
   onDone: () => void;
+  onPreview?: () => void;
 }) {
   const [data, setData] = useState<WorkflowActivation | null>(null);
   const [log, setLog] = useState<string[]>([]);
@@ -275,6 +276,7 @@ export function WorkflowActivationPanel({
         </label>
       ) : null}
       <div className="actions">
+        {onPreview ? <button className="button secondary" type="button" onClick={onPreview}>预览草稿</button> : null}
         <button
           className="button"
           type="button"

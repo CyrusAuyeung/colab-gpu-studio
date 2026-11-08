@@ -189,10 +189,9 @@ class WorkbenchService:
         source = self.repo.store if kind == "assets" and hasattr(self.repo, "store") else self.repo
         return list(source.list(kind, owner))
 
-    def _workflows(self, owner: str):
-        if self.registry is not None:
-            return [row for row in self.registry.workflows(owner) if row.get("state") == "published"]
-        return [row for row in self._rows("workflows", owner) if row.get("state") == "published"]
+    def _workflows(self, owner: str, *, include_drafts: bool = False):
+        rows = self.registry.workflows(owner) if self.registry is not None else self._rows("workflows", owner)
+        return [row for row in rows if include_drafts or row.get("state") == "published"]
 
     @staticmethod
     def _workflow_identity(payload: Mapping):
@@ -202,15 +201,15 @@ class WorkbenchService:
             raise WorkbenchError("VALIDATION_ERROR", "必须指定已发布工作流 key 和 version")
         return key, version
 
-    def _workflow(self, owner: str, payload: Mapping):
+    def _workflow(self, owner: str, payload: Mapping, *, include_drafts: bool = False):
         workflow_id = payload.get("workflow_id")
         if workflow_id:
-            for row in self._workflows(owner):
+            for row in self._workflows(owner, include_drafts=include_drafts):
                 if row.get("id") == workflow_id:
                     return row
             raise WorkbenchError("WORKFLOW_UNPUBLISHED", "工作流未发布或不属于当前用户", 409)
         key, version = self._workflow_identity(payload)
-        for row in self._workflows(owner):
+        for row in self._workflows(owner, include_drafts=include_drafts):
             if row.get("workflow_key") == key and row.get("workflow_version") == version:
                 return row
         raise WorkbenchError("WORKFLOW_UNPUBLISHED", "工作流未发布或不属于当前用户", 409)
@@ -338,13 +337,15 @@ class WorkbenchService:
         return copy.deepcopy(value)
 
     def get_reviewed_graph(self, owner, payload: Mapping):
-        """Read a published graph without requiring a live/verified instance.
+        """Read an owner-scoped graph without requiring a live/verified instance.
 
-        This is deliberately separate from write-capable instance actions:
-        owner scoping and the published-workflow review boundary remain in
-        effect, but offline/history instances can still render their graph.
+        Published previews keep the review boundary; an explicit allow_draft
+        request exposes only the same sanitized graph as read-only presentation.
         """
-        workflow = self._workflow(owner, payload)
+        allow_draft = payload.get("allow_draft") is True
+        workflow = self._workflow(owner, payload, include_drafts=allow_draft)
+        if workflow.get("state") != "published" and not allow_draft:
+            raise WorkbenchError("WORKFLOW_UNPUBLISHED", "工作流未发布或不属于当前用户", 409)
         graph = workflow.get("api_graph")
         if not isinstance(graph, Mapping):
             raise WorkbenchError("WORKFLOW_INVALID", "已发布工作流缺少受审查图", 409)
@@ -365,8 +366,9 @@ class WorkbenchService:
             "workflow_version": workflow["workflow_version"],
             "model_id": workflow.get("model_id"),
             "description": workflow.get("description"),
-            "reviewed": True,
-            "published": True,
+            "reviewed": workflow.get("state") == "published",
+            "published": workflow.get("state") == "published",
+            "state": workflow.get("state"),
             "ui_graph": self._safe_preview_graph(editable) if isinstance(editable, (Mapping, list)) else None,
             "api_graph": self._safe_preview_graph(graph),
             "parameters": self._public_parameters(workflow.get("manifest") or {}),

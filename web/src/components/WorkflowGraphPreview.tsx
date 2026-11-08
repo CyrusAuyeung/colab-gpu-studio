@@ -10,6 +10,7 @@ export interface WorkflowGraphPreviewData {
   description?: string;
   reviewed?: boolean;
   published?: boolean;
+  state?: string;
   ui_graph?: unknown;
   api_graph?: unknown;
   parameters?: Array<JsonRecord>;
@@ -141,11 +142,11 @@ export function WorkflowGraphPreview({ workflow, loadPreview, onClose }: Workflo
     <div className={styles.backdrop} role="presentation" onClick={onClose}>
       <section className={styles.dialog} role="dialog" aria-modal="true" aria-label="工作流图预览" onClick={(event) => event.stopPropagation()}>
         <header className={styles.header}>
-          <div><p className={styles.eyebrow}>离线只读预览</p><h2>{workflow.workflow_key} · v{workflow.workflow_version}</h2><p className={styles.muted}>{data?.description || '不连接实例，不安装脚本，不创建 GPU。'}</p></div>
+          <div><p className={styles.eyebrow}>离线只读预览 · {data?.published === false ? '草稿' : '已发布'}</p><h2>{workflow.workflow_key} · v{workflow.workflow_version}</h2><p className={styles.muted}>{data?.description || '不连接实例，不安装脚本，不创建 GPU。'}</p></div>
           <div className={styles.headerActions}><button type="button" className="button secondary small" onClick={() => data && downloadPreview(data)} disabled={!data}>下载 JSON</button><button type="button" className="button ghost small" onClick={onClose}>关闭</button></div>
         </header>
         {error && <p className={styles.error} role="alert">{error}</p>}
-        {!data && !error && <div className={styles.loading}>正在读取已发布的受审查图…</div>}
+        {!data && !error && <div className={styles.loading}>正在读取受审查图…</div>}
         {data && <>
           <div className={styles.tabs} role="tablist" aria-label="预览类型">
             <button type="button" role="tab" aria-selected={tab === 'ui'} onClick={() => setTab('ui')}>UI workflow</button>

@@ -136,11 +136,33 @@ def test_reviewed_graph_preview_is_owner_scoped_and_does_not_need_instance():
     assert getattr(exc.value, "code", None) == "WORKFLOW_UNPUBLISHED"
 
 
+def test_draft_graph_preview_is_owner_scoped_and_read_only():
+    repo = PreviewRepo()
+    repo.rows["workflows"].append({
+        "id": "wf-draft", "owner_id": "owner", "workflow_key": "draft-demo",
+        "workflow_version": 2, "model_id": "demo-model", "state": "draft",
+        "manifest": {"parameters": {}},
+        "api_graph": {"1": {"class_type": "DraftNode", "inputs": {}}},
+    })
+    service = WorkbenchService(repo=repo)
+    result = service.get_reviewed_graph("owner", {
+        "workflow_key": "draft-demo", "workflow_version": 2, "allow_draft": True,
+    })
+    assert result["published"] is False
+    assert result["reviewed"] is False
+    assert result["state"] == "draft"
+    with pytest.raises(Exception) as exc:
+        service.get_reviewed_graph("other", {
+            "workflow_key": "draft-demo", "workflow_version": 2, "allow_draft": True,
+        })
+    assert getattr(exc.value, "code", None) == "WORKFLOW_UNPUBLISHED"
+
+
 def test_workflow_preview_route_uses_authenticated_owner_and_version():
     class PreviewWorkbench:
         def get_reviewed_graph(self, owner, payload):
             assert owner == "owner"
-            assert payload == {"workflow_key": "offline-demo", "workflow_version": 1}
+            assert payload == {"workflow_key": "offline-demo", "workflow_version": 1, "allow_draft": False}
             return {"workflow_key": "offline-demo", "workflow_version": 1, "api_graph": {}}
 
     app = FastAPI()

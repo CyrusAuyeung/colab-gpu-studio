@@ -19,4 +19,7 @@ test('workbench contains a separate offline history entry and graph preview comp
   assert.match(source, /历史日志/);
   assert.match(source, /getInstanceHistory/);
   assert.match(source, /WorkflowGraphPreview/);
+  assert.match(source, /jobStateLabel\(job\.state\)/);
+  assert.match(source, /jobStageLabel\(name\)/);
+  assert.match(source, /timing_details/);
 });

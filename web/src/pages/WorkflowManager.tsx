@@ -13,8 +13,9 @@ const VERSIONS_SHOWN = 4;
 const cmp = (a: GpuWorkflow, b: GpuWorkflow) =>
   String(b.workflow_version).localeCompare(String(a.workflow_version), undefined, { numeric: true });
 
-async function fetchWorkflowGraphPreview(workflow: Pick<GpuWorkflow, 'workflow_key' | 'workflow_version'>): Promise<WorkflowGraphPreviewData> {
+async function fetchWorkflowGraphPreview(workflow: Pick<GpuWorkflow, 'workflow_key' | 'workflow_version' | 'state'>): Promise<WorkflowGraphPreviewData> {
   const query = new URLSearchParams({ version: String(workflow.workflow_version) });
+  if (workflow.state !== 'published') query.set('draft', 'true');
   const response = await fetch(`/api/gpu/workflows/${encodeURIComponent(workflow.workflow_key)}/preview?${query}`, { credentials: 'include' });
   const body = await response.json().catch(() => ({}));
   if (!response.ok) {
@@ -125,7 +126,7 @@ export function WorkflowsPanel({
                             <span className="pill" data-state={wf.active ? 'active' : wf.state}>{workflowState(wf.state, wf.active)}</span>
                           </span>
                           <span className={styles.versionActions}>
-                            {published && <button className="button secondary small" type="button" onClick={() => setPreviewing(wf)}>离线预览</button>}
+                            <button className="button secondary small" type="button" onClick={() => setPreviewing(wf)}>离线预览</button>
                             {!published && (
                               <button className="button small" type="button" onClick={() => setActivating(activating === wf.id ? null : wf.id)}>
                                 {activating === wf.id ? '收起启用向导' : '一键启用'}
@@ -142,6 +143,7 @@ export function WorkflowsPanel({
                               workflow={wf}
                               onClose={() => setActivating(null)}
                               onDone={onActivated}
+                              onPreview={() => setPreviewing(wf)}
                             />
                           </div>
                         )}

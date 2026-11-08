@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { apiMessage, getWorkbench, workbenchAction, type GpuParameter, type Workbench } from '../lib/gpu-api';
 import { getInstanceHistory, type InstanceHistory, type InstanceHistoryJob } from '../lib/instance-history';
 import { formatDuration, formatTiming, type TimingDetail } from '../lib/job-history';
+import { jobStageLabel, jobStateLabel } from '../lib/job-stage-rows';
 import type { GpuInstance } from './AccountDirectory';
 import { WorkflowGraphPreview, type WorkflowGraphPreviewData } from './WorkflowGraphPreview';
 import styles from './v020.module.css';
@@ -63,11 +64,19 @@ function safeAssetUrl(url?: string): string | null {
   try { const parsed = new URL(url, window.location.origin); return parsed.origin === window.location.origin ? parsed.pathname + parsed.search : null; } catch { return null; }
 }
 function jobLabel(job: InstanceHistoryJob): string { return String(job.workflow_key || job.job_id || job.id || '历史任务'); }
-function jobTiming(job: InstanceHistoryJob): Array<[string, string]> {
+function jobTiming(job: InstanceHistoryJob): Array<[string, string, string]> {
   const details = job.timing_details || {};
-  const rows = Object.entries(details).map(([name, detail]) => [name, formatTiming(detail as TimingDetail)] as [string, string]);
-  if (rows.length) return rows;
-  return Object.entries(job.timings || {}).map(([name, seconds]) => [name, formatDuration(seconds)] as [string, string]);
+  const rows = new Map<string, [string, string, string]>(
+    Object.entries(job.timings || {}).map(([name, seconds]) => [name, [name, jobStageLabel(name), formatDuration(seconds)]]),
+  );
+  for (const [name, detail] of Object.entries(details)) {
+    if (!detail || typeof detail !== 'object') continue;
+    const timing = detail as TimingDetail;
+    if (timing.status === 'in_progress' || (typeof timing.seconds === 'number' && Number.isFinite(timing.seconds) && timing.seconds >= 0)) {
+      rows.set(name, [name, jobStageLabel(name), formatTiming(timing)]);
+    }
+  }
+  return [...rows.values()];
 }
 
 const defaultWorkbenchApi: WorkbenchApi = {
@@ -203,10 +212,10 @@ function HistoryPanel({ jobs, loading, error, offline }: { jobs: InstanceHistory
     {error && <p className={styles.error} role="alert">历史读取失败：{error}</p>}
     {!loading && !error && !jobs.length && <div className={styles.empty}><strong>暂无历史任务</strong><span>实时工作台失败不会影响此处的本地历史查询。</span></div>}
     <div className={styles.jobList}>{jobs.map((job) => <article className={styles.jobItem} key={job.id}>
-      <div className={styles.cardTop}><div className={styles.minWidth}><b>{jobLabel(job)}</b><p className={styles.muted}>{job.job_id || job.id}{job.provider ? ` · ${job.provider}` : ''}</p></div><span className={`${styles.stateBadge} ${String(job.state).toLowerCase() === 'failed' ? styles.bad : ''}`}>{job.state || '状态未知'}</span></div>
+      <div className={styles.cardTop}><div className={styles.minWidth}><b>{jobLabel(job)}</b><p className={styles.muted}>{job.job_id || job.id}{job.provider ? ` · ${job.provider}` : ''}</p></div><span className={`${styles.stateBadge} ${String(job.state).toLowerCase() === 'failed' ? styles.bad : ''}`}>{jobStateLabel(job.state)}</span></div>
       {job.error && <p className={styles.error} role="alert">{job.error.code ? `[${job.error.code}] ` : ''}{job.error.message || '任务失败'}</p>}
-      {!!jobTiming(job).length && <div className={styles.detailGrid}><strong>耗时</strong>{jobTiming(job).map(([name, value]) => <span key={name}>{name}：{value}</span>)}</div>}
-      {!!job.logs?.length && <div className={styles.logList}><h4>日志</h4>{job.logs.map((log, index) => <article className={styles.logItem} key={log.id || index}><time>{log.created_at || ''}</time><pre>{log.message || log.state || ''}</pre></article>)}</div>}
+      {!!jobTiming(job).length && <div className={styles.detailGrid}><strong>耗时</strong>{jobTiming(job).map(([name, label, value]) => <span key={name}>{label}：{value}</span>)}</div>}
+      {!!job.logs?.length && <div className={styles.logList}><h4>日志</h4>{job.logs.map((log, index) => <article className={styles.logItem} key={log.id || index}><time>{log.created_at || ''}</time><pre>{log.message || (log.state ? jobStateLabel(log.state) : '')}</pre></article>)}</div>}
       {!!job.artifacts?.length && <div className={styles.artifactList}><h4>产物</h4>{job.artifacts.map((artifact, index) => { const src = safeAssetUrl(artifact.thumbnail_url); return <article className={styles.artifactItem} key={artifact.id || index}>{src ? <img className={styles.artifactThumb} src={src} alt="" /> : <div className={styles.artifactThumb} aria-hidden="true" />}<div><b>{artifact.name || artifact.filename || artifact.id || '未命名产物'}</b><small className={styles.muted}>{artifact.mime || '类型未确认'} · {artifact.status || '已记录'}</small></div></article>; })}</div>}
     </article>)}</div>
   </div>;
