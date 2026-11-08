@@ -6,6 +6,8 @@ It never contacts a runtime, allocates a lease, or submits a GPU job.
 
 from __future__ import annotations
 
+import time
+
 from fastapi import APIRouter, Depends, Request
 
 from .common import APIError, current_user, get_store, ok
@@ -54,7 +56,7 @@ def _public_asset(asset: dict) -> dict:
     return result
 
 
-def _history_job(repo, owner: str, job: dict, assets: dict[str, dict]) -> dict:
+def _history_job(repo, owner: str, job: dict, assets: dict[str, dict], *, now: float | None = None) -> dict:
     events = _events(repo, owner, job["id"])
     public = safe_history_value(public_job(job))
     error = None
@@ -70,8 +72,8 @@ def _history_job(repo, owner: str, job: dict, assets: dict[str, dict]) -> dict:
     return {
         **public,
         "job_id": job["id"],
-        "timings": job_timings(job, events),
-        "timing_details": job_timing_details(job, events),
+        "timings": job_timings(job, events, now=now),
+        "timing_details": job_timing_details(job, events, now=now),
         "events": logs,
         "logs": logs,
         "error": error,
@@ -90,13 +92,14 @@ def instance_history(instance_id: str, request: Request, user=Depends(current_us
     jobs.sort(key=lambda row: str(row.get("updated_at") or row.get("created_at") or ""), reverse=True)
     asset_ids = {asset_id for job in jobs for asset_id in (job.get("output_asset_ids") or []) if isinstance(asset_id, str)}
     assets = {asset_id: asset for asset_id in asset_ids for asset in repo.list("assets", owner) if asset.get("id") == asset_id}
+    now = time.time()
     return ok({
         "instance_id": instance_id,
         "offline": True,
         "source": "persisted_job_history",
         "live_runtime": False,
         "remote_actions": False,
-        "jobs": [_history_job(repo, owner, job, assets) for job in jobs],
+        "jobs": [_history_job(repo, owner, job, assets, now=now) for job in jobs],
     }, request)
 
 

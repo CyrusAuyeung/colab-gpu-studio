@@ -46,6 +46,52 @@ def test_timing_details_mark_an_active_stage_and_ignore_events_without_timestamp
     assert "cleanup" not in details
 
 
+def test_timing_details_derive_active_lifecycle_stage_from_persisted_events():
+    details = job_timing_details(
+        {"state": "uploading", "worker_timings": {}},
+        [
+            {"state": "queued", "created_at": 0},
+            {"state": "uploading", "created_at": 10},
+        ],
+        now=25.0,
+    )
+
+    assert details["upload"] == {
+        "seconds": 15.0,
+        "source": "events",
+        "status": "in_progress",
+    }
+
+
+def test_timing_details_never_turn_missing_active_event_time_into_zero():
+    details = job_timing_details(
+        {"state": "uploading", "worker_timings": {}},
+        [{"state": "uploading", "created_at": None}],
+    )
+
+    assert details["upload"] == {
+        "seconds": None,
+        "source": "events",
+        "status": "in_progress",
+    }
+
+
+def test_active_event_clock_spans_repeated_states_and_queue_substates():
+    details = job_timing_details(
+        {"state": "waiting_for_capacity", "stage": "untrusted_stage"},
+        [
+            {"state": "queued", "created_at": 0},
+            {"state": "validating", "created_at": 5},
+            {"state": "waiting_for_capacity", "created_at": 10},
+            {"state": "waiting_for_capacity", "created_at": 15},
+        ],
+        now=25.0,
+    )
+
+    assert details["queue"]["seconds"] == 25.0
+    assert "untrusted_stage" not in details
+
+
 def test_timing_details_preserve_zero_only_when_worker_explicitly_persisted_it():
     details = job_timing_details(
         {"state": "completed", "worker_timings": {"warm_reuse": 0.0}},

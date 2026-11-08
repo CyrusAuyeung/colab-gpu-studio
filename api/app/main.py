@@ -40,7 +40,7 @@ from .gpu.repository import Repository
 from .gpu.scheduler import Scheduler
 from .history_routes import router as history_router
 from .instance_routes import router as instance_router
-from .job_history import job_timings
+from .job_history import job_timing_details, job_timings
 from .job_schemas import JobInput
 from .oauth_config_routes import router as oauth_config_router
 from .presenters import public_asset, public_job
@@ -531,7 +531,10 @@ def get_job(job_id: str, request: Request, user=Depends(current_user), st=Depend
     job = own(repo, "jobs", job_id, user)
     result = public_job(job)
     result["events"] = [e for e in repo.list("events", user["id"]) if e.get("job_id") == job_id][::-1]
-    result["timings"] = job_timings(job, result["events"])
+    result["logs"] = result["events"]
+    now = time.time()
+    result["timings"] = job_timings(job, result["events"], now=now)
+    result["timing_details"] = job_timing_details(job, result["events"], now=now)
     allowed={'id','state','attempt','started_at','finished_at','error_code'}
     result['attempts']=sorted([{k:v for k,v in row.items() if k in allowed}
         for row in repo.list('executions',user['id']) if row.get('job_id')==job_id],key=lambda row:row.get('attempt',0))

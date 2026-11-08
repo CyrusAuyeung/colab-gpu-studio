@@ -18,7 +18,17 @@ def _job() -> dict:
         "workflow_key": "trusted-json-fixture",
         "workflow_version": "1.0.0",
         "params": {"prompt": "contract fixture"},
-        "snapshot": {"model_revision": "fixture-revision-1"},
+        "snapshot": {
+            "model_revision": "fixture-revision-1",
+            "weight_manifest": [
+                {
+                    "filename": "weights/laya-fixture.bin",
+                    "revision": "weights-rev-1",
+                    "sha256": "81c621d2c285c449ae98ebf1e672e6520b7c8acccd582bd0f5f4ec49ed7db6e6",
+                    "size": 20,
+                }
+            ],
+        },
         "deadline_epoch": 4_000_000_000,
         "execution_id": "offline-example-execution",
     }
@@ -55,6 +65,8 @@ def test_default_factory_runs_allowlisted_offline_fixture_lifecycle(monkeypatch)
     executor = default_executor_factory(job, GpuConfig.from_env())
 
     started = executor.start(_handle(), job, job["execution_id"])
+    # Scheduler recreates the adapter between ticks.
+    executor = default_executor_factory(job, GpuConfig.from_env())
     polled = executor.poll(_handle(), job)
     collected = polled["outputs"][0]["content"]
     artifact = json.loads(collected)

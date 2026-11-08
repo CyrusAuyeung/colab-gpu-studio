@@ -32,6 +32,22 @@ class FakeTrustedPlugin:
         self.calls.append(("start", payload))
         return self._result(payload, "running")
 
+    def prepare(self, payload: dict) -> dict:
+        self.calls.append(("prepare", payload))
+        return self._result(
+            payload,
+            "prepared",
+            preparation={
+                "cache_namespace": payload["cache"]["namespace"],
+                "model_revision": payload["cache"]["model_revision"],
+                "weights_manifest_sha256": payload["cache"]["weights_manifest_sha256"],
+                "weights": [
+                    {**weight, "verified_sha256": weight["sha256"]}
+                    for weight in payload["preparation"]["weights"]
+                ],
+            },
+        )
+
     def poll(self, payload: dict) -> dict:
         self.calls.append(("poll", payload))
         return self._result(
@@ -89,7 +105,18 @@ def _job(**overrides) -> dict:
         "workflow_key": "laya-json",
         "workflow_version": "1.0.0",
         "params": {"prompt": "hello"},
-        "snapshot": {"model_revision": "model-rev-1", "workflow_sha256": "a" * 64},
+        "snapshot": {
+            "model_revision": "model-rev-1",
+            "workflow_sha256": "a" * 64,
+            "weight_manifest": [
+                {
+                    "filename": "weights/laya-fixture.bin",
+                    "revision": "weights-rev-1",
+                    "sha256": "81c621d2c285c449ae98ebf1e672e6520b7c8acccd582bd0f5f4ec49ed7db6e6",
+                    "size": 20,
+                }
+            ],
+        },
         "deadline_epoch": 4_000_000_000,
         "execution_id": "exec-1",
     }
@@ -161,10 +188,12 @@ def test_factory_loads_allowlisted_plugin_and_runs_start_poll(trusted_module):
     assert started["execution_id"] == "exec-1"
     assert completed["state"] == "completed"
     assert completed["outputs"][0]["content"] == b'{"ok":true}'
-    assert [name for name, _ in trusted_module.calls] == ["start", "poll"]
+    assert [name for name, _ in trusted_module.calls] == ["prepare", "start", "poll"]
     payload = trusted_module.calls[0][1]
     assert payload["cache"]["model_revision"] == "model-rev-1"
     assert payload["cache"]["namespace"].startswith("admin-contract/")
+    assert len(payload["cache"]["weights_manifest_sha256"]) == 64
+    assert payload["preparation"]["required"] is True
     assert "module" not in payload and "script" not in payload and "url" not in payload
 
 
@@ -193,6 +222,63 @@ def test_input_rejects_client_script_url_and_requires_model_revision(trusted_mod
 
     with pytest.raises(TrustedExecutorError, match="model_revision"):
         executor.start(_handle(), _job(snapshot={}), "exec-1")
+
+
+def test_input_rejects_unpinned_or_invalid_weight_manifest(trusted_module):
+    with pytest.raises(TrustedExecutorError, match="weight manifest"):
+        default_executor_factory(
+            _job(snapshot={"model_revision": "model-rev-1", "weight_manifest": []}),
+            _config(),
+        ).start(_handle(), _job(snapshot={"model_revision": "model-rev-1", "weight_manifest": []}), "exec-1")
+
+    invalid = _job(
+        snapshot={
+            "model_revision": "model-rev-1",
+            "weight_manifest": [
+                {
+                    "filename": "weights/laya-fixture.bin",
+                    "revision": "weights-rev-1",
+                    "sha256": "not-a-sha256",
+                    "size": 20,
+                }
+            ],
+        }
+    )
+    with pytest.raises(TrustedExecutorError, match="sha256"):
+        default_executor_factory(invalid, _config()).start(_handle(), invalid, "exec-1")
+
+
+def test_dependency_weight_manifest_is_prepared_and_bad_manifest_does_not_block_release(trusted_module):
+    dependency_job = _job(
+        snapshot={
+            "model_revision": "model-rev-1",
+            "manifest": {
+                "dependencies": {
+                    "weight_files": [
+                        {
+                            "filename": "weights/laya-fixture.bin",
+                            "revision": "weights-rev-1",
+                            "sha256": "81c621d2c285c449ae98ebf1e672e6520b7c8acccd582bd0f5f4ec49ed7db6e6",
+                            "size": 20,
+                        }
+                    ]
+                }
+            },
+        }
+    )
+    executor = default_executor_factory(dependency_job, _config())
+    executor.start(_handle(), dependency_job, "exec-1")
+    assert trusted_module.calls[0][0] == "prepare"
+
+    malformed = _job(
+        snapshot={
+            "model_revision": "model-rev-1",
+            "weight_manifest": [{"filename": "../escape", "revision": "r", "sha256": "bad", "size": 1}],
+        }
+    )
+    release_executor = default_executor_factory(malformed, _config())
+    assert release_executor.cancel(_handle(), malformed)["state"] == "cancelled"
+    assert release_executor.cleanup(_handle(), malformed)["state"] == "cleaned"
 
 
 def test_output_cache_revision_mismatch_is_rejected(trusted_module):

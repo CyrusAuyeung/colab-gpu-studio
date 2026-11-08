@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { apiMessage, getWorkbench, workbenchAction, type GpuParameter, type Workbench } from '../lib/gpu-api';
 import { getInstanceHistory, type InstanceHistory, type InstanceHistoryJob } from '../lib/instance-history';
-import { formatDuration, formatTiming, type TimingDetail } from '../lib/job-history';
+import { formatDuration, formatTiming, timingRows, type TimingDetail } from '../lib/job-history';
 import { jobStageLabel, jobStateLabel } from '../lib/job-stage-rows';
 import type { GpuInstance } from './AccountDirectory';
 import { WorkflowGraphPreview, type WorkflowGraphPreviewData } from './WorkflowGraphPreview';
@@ -76,7 +76,7 @@ function jobTiming(job: InstanceHistoryJob): Array<[string, string, string]> {
       rows.set(name, [name, jobStageLabel(name), formatTiming(timing)]);
     }
   }
-  return [...rows.values()];
+  return [...rows.values()].map(([name, label, value]) => [name, label, timingRows(job).find((row) => row.key === name)?.value || value]);
 }
 
 const defaultWorkbenchApi: WorkbenchApi = {

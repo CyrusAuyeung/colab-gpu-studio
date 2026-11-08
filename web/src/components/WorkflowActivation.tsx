@@ -1,15 +1,16 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   acceptGpuWorkflowSmoke, apiMessage, getGpuComputeSpecs, getGoogleAccounts, getProjects, getWorkflowActivation,
-  publishGpuWorkflow, realSmokeGpuWorkflow, reviewGpuModel, reviewGpuWorkflow, validateGpuWorkflow,
+  publishGpuWorkflow, realSmokeGpuWorkflow, reviewGpuModel, reviewGpuWorkflow, validateGpuWorkflow, getGpuJob,
   type ComputeSpec, type GpuWorkflow, type WorkflowActivation,
 } from '../lib/gpu-api';
 import {
   appendActivationLog, getActivationStep, getSmokeRuntimeMinutes, hasExistingSmoke,
-  isSmokeCompleted, isSmokePolling, shouldAcceptSmoke, shouldCreateSmoke,
+  isSmokeCompleted, isSmokePolling, shouldAcceptSmoke, shouldCreateSmoke, terminalSmokeJobId,
 } from '../lib/activation-resume';
 import { resolveGpuCheckRequest, selectEligibleColabGpuSpec } from '../lib/colab-check';
 import styles from '../gpu.module.css';
+import { JobHistoryDetails, type JobHistoryDetailRecord } from './JobHistoryDetails';
 
 const STEPS_POLL_MS = 6000;
 
@@ -29,14 +30,18 @@ function smokeStateText(state: string): string {
 }
 
 export function WorkflowActivationPanel({
-  workflow, onClose, onDone, onPreview,
+  workflow, onClose, onDone, onPreview, onOpenJob,
 }: {
   workflow: GpuWorkflow;
   onClose: () => void;
   onDone: () => void;
   onPreview?: () => void;
+  onOpenJob?: (jobId: string) => void;
 }) {
   const [data, setData] = useState<WorkflowActivation | null>(null);
+  const [history, setHistory] = useState<JobHistoryDetailRecord | null>(null);
+  const [historyError, setHistoryError] = useState('');
+  const [historyBusy, setHistoryBusy] = useState(false);
   const [log, setLog] = useState<string[]>([]);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
@@ -106,7 +111,7 @@ export function WorkflowActivationPanel({
         await validateGpuWorkflow(workflow.id);
         if (!isCurrent(token)) return;
         snapshot = await refresh(token);
-        if (!isCurrent(token)) return;
+          if (!isCurrent(token)) return;
       }
       if (getActivationStep(snapshot, 'model_review')?.done !== true) {
         if (!snapshot.model) throw new Error('找不到绑定的模型记录');
@@ -114,14 +119,14 @@ export function WorkflowActivationPanel({
         await reviewGpuModel(snapshot.model.model_id);
         if (!isCurrent(token)) return;
         snapshot = await refresh(token);
-        if (!isCurrent(token)) return;
+          if (!isCurrent(token)) return;
       }
       if (getActivationStep(snapshot, 'workflow_review')?.done !== true) {
         say('正在锁定权重与节点…', token);
         await reviewGpuWorkflow(workflow.id);
         if (!isCurrent(token)) return;
         snapshot = await refresh(token);
-        if (!isCurrent(token)) return;
+          if (!isCurrent(token)) return;
       }
 
       if (getActivationStep(snapshot, 'real_smoke')?.done !== true) {
@@ -275,7 +280,20 @@ export function WorkflowActivationPanel({
           <span>我知道会真实开 GPU 并产生费用</span>
         </label>
       ) : null}
+      {historyError ? <p role="alert" className={styles.errorText}>{historyError}</p> : null}
+      {history ? <section aria-label="持久任务详情"><JobHistoryDetails job={history} /></section> : null}
       <div className="actions">
+        {terminalSmokeJobId(data) ? <button className="button secondary" type="button" disabled={historyBusy} onClick={() => {
+          const jobId = terminalSmokeJobId(data);
+          if (!jobId) return;
+          if (onOpenJob) { onOpenJob(jobId); return; }
+          const token = executionRef.current;
+          setHistoryError('');
+          setHistoryBusy(true);
+          void getGpuJob(jobId).then((job) => { if (isCurrent(token)) setHistory(job); })
+            .catch((err) => { if (isCurrent(token)) setHistoryError(apiMessage(err)); })
+            .finally(() => { if (isCurrent(token)) setHistoryBusy(false); });
+        }}>查看任务详情/日志</button> : null}
         {onPreview ? <button className="button secondary" type="button" onClick={onPreview}>预览草稿</button> : null}
         <button
           className="button"

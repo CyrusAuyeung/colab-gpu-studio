@@ -297,6 +297,10 @@ class WorkbenchService:
             "access_token",
             "refresh_token",
             "connection_token",
+            "connection_info",
+            "connectioninfo",
+            "connection_string",
+            "connectionstring",
             "credential",
             "credentials",
             "api_key",
@@ -336,6 +340,147 @@ class WorkbenchService:
             return re.sub(r"(?:https?|wss?)://[^\s\"'<>]+", "[REDACTED_URL]", value)
         return copy.deepcopy(value)
 
+    @staticmethod
+    def _evidence_status(value):
+        """Map stored booleans to honest review evidence states.
+
+        ``None``/absent means that this offline snapshot has no evidence.  It
+        must not be rendered as a failed check or as a successful runtime
+        probe.  A stored ``False`` is kept distinct as an explicit
+        not-confirmed result.
+        """
+        if value is True:
+            return "confirmed"
+        if value is False:
+            return "not_confirmed"
+        return "not_detected"
+
+    @classmethod
+    def _public_weight_files(cls, manifest):
+        dependencies = manifest.get("dependencies") if isinstance(manifest, Mapping) else None
+        raw = manifest.get("weight_files") if isinstance(manifest, Mapping) else None
+        if not isinstance(raw, list) and isinstance(dependencies, Mapping):
+            raw = dependencies.get("weight_files")
+        if not isinstance(raw, list):
+            return []
+
+        result = []
+        for item in raw:
+            if not isinstance(item, Mapping):
+                continue
+            public = {}
+            for key in ("repo_id", "filename", "revision", "sha256", "target", "size"):
+                if item.get(key) is not None:
+                    public[key] = cls._safe_public_value(item[key])
+            metadata_complete = all(
+                isinstance(public.get(key), str) and bool(public[key])
+                for key in ("repo_id", "filename", "revision", "sha256", "target")
+            )
+            public["metadata"] = {
+                "status": "confirmed" if metadata_complete else "confirmed_missing",
+                "label": "已确认" if metadata_complete else "清单字段缺失",
+            }
+
+            verification = item.get("verification")
+            trusted_sources = {"prep_report", "runtime_worker", "worker", "cache_probe"}
+            trusted = (
+                isinstance(verification, Mapping)
+                and verification.get("verified") is True
+                and verification.get("source") in trusted_sources
+            )
+            explicit = verification.get("status") if isinstance(verification, Mapping) else None
+            if trusted and str(explicit).lower() in {"missing", "absent", "confirmed_missing"}:
+                availability_status = "confirmed_missing"
+            elif trusted and str(explicit).lower() in {"present", "available", "verified"}:
+                availability_status = "confirmed"
+            else:
+                # A manifest's self-asserted ``present``/``missing`` flag is
+                # not a cache probe.  Only a separately marked, trusted
+                # verification result may confirm runtime availability.
+                availability_status = "not_detected"
+            public["availability"] = {
+                "status": availability_status,
+                "label": {
+                    "confirmed": "已确认存在",
+                    "confirmed_missing": "确认缺失",
+                    "not_detected": "未检测",
+                }[availability_status],
+                "source": "stored_manifest" if availability_status == "not_detected" else "stored_evidence",
+            }
+            result.append(public)
+        return result
+
+    @classmethod
+    def _node_references(cls, graph):
+        if not isinstance(graph, Mapping):
+            return []
+        result = []
+        for node_id, node in graph.items():
+            if not isinstance(node, Mapping):
+                continue
+            class_type = node.get("class_type")
+            if not isinstance(class_type, str):
+                continue
+            result.append(
+                {
+                    "node_id": str(node_id),
+                    "class_type": class_type,
+                    "inputs": cls._safe_preview_graph(node.get("inputs", {})),
+                }
+            )
+        return result
+
+    @classmethod
+    def _review_evidence(cls, workflow, model, node_references, manifest, weight_files):
+        allowlist = manifest.get("node_allowlist") if isinstance(manifest, Mapping) else None
+        if not isinstance(allowlist, list):
+            dependencies = manifest.get("dependencies") if isinstance(manifest, Mapping) else None
+            allowlist = dependencies.get("node_allowlist") if isinstance(dependencies, Mapping) else None
+        classes = sorted({item["class_type"] for item in node_references})
+        node_reviewed = (
+            isinstance(allowlist, list)
+            and bool(classes)
+            and all(class_type in allowlist for class_type in classes)
+        )
+        if isinstance(allowlist, list) and classes and not node_reviewed:
+            node_status = "not_in_allowlist"
+        else:
+            node_status = "confirmed" if node_reviewed else "not_detected"
+        weight_statuses = [item["metadata"]["status"] for item in weight_files]
+        if not weight_files:
+            weight_status = "not_detected"
+        elif all(status == "confirmed" for status in weight_statuses):
+            weight_status = "confirmed"
+        else:
+            weight_status = "confirmed_missing"
+        model_review = {
+            "status": cls._evidence_status(model.get("review_approved") if isinstance(model, Mapping) else None),
+            "review_approved": model.get("review_approved") if isinstance(model, Mapping) else None,
+            "license_accepted": model.get("license_accepted") if isinstance(model, Mapping) else None,
+        }
+        return {
+            "workflow": {
+                "status": cls._evidence_status(workflow.get("review_approved")),
+                "review_approved": workflow.get("review_approved"),
+                "reviewed_by": cls._safe_public_value(workflow.get("reviewed_by"))
+                if workflow.get("reviewed_by") is not None
+                else None,
+                "reviewed_at": workflow.get("reviewed_at"),
+            },
+            "model": model_review,
+            "nodes": {
+                "status": node_status,
+                "classes": classes,
+                "allowlist": cls._safe_public_value(allowlist) if isinstance(allowlist, list) else [],
+            },
+            "weights": {"status": weight_status},
+            "smoke": {
+                "status": cls._evidence_status(workflow.get("smoke_test_passed")),
+                "passed": workflow.get("smoke_test_passed"),
+                "kind": cls._safe_public_value(workflow.get("smoke_test_kind")),
+            },
+        }
+
     def get_reviewed_graph(self, owner, payload: Mapping):
         """Read an owner-scoped graph without requiring a live/verified instance.
 
@@ -351,15 +496,47 @@ class WorkbenchService:
             raise WorkbenchError("WORKFLOW_INVALID", "已发布工作流缺少受审查图", 409)
 
         editable = workflow.get("editable_graph")
+        manifest = workflow.get("manifest") if isinstance(workflow.get("manifest"), Mapping) else {}
+        weight_files = self._public_weight_files(manifest)
+        node_references = self._node_references(graph)
         models = []
-        for model in self._rows("models", owner):
-            if model.get("model_id") != workflow.get("model_id"):
+        model_row = None
+        for row in self._rows("models", owner):
+            if row.get("model_id") != workflow.get("model_id"):
                 continue
-            summary = {"model_id": model.get("model_id")}
-            for key in ("name", "display_name", "description", "enabled", "is_mock", "license_status", "disabled_reason"):
-                if model.get(key) is not None:
-                    summary[key] = self._safe_public_value(model[key])
+            model_row = row
+            summary = {"model_id": row.get("model_id")}
+            for key in (
+                "name",
+                "display_name",
+                "description",
+                "enabled",
+                "is_mock",
+                "license_status",
+                "disabled_reason",
+                "revision",
+                "sha256",
+                "review_approved",
+                "license_accepted",
+            ):
+                if row.get(key) is not None:
+                    summary[key] = self._safe_public_value(row[key])
             models.append(summary)
+
+        dependencies = manifest.get("dependencies") if isinstance(manifest, Mapping) else None
+        comfyui_commit = manifest.get("comfyui_commit")
+        if comfyui_commit is None and isinstance(dependencies, Mapping):
+            comfyui_commit = dependencies.get("comfyui_commit")
+        custom_nodes = manifest.get("custom_nodes")
+        if custom_nodes is None and isinstance(dependencies, Mapping):
+            custom_nodes = dependencies.get("custom_nodes")
+        manifest_evidence = {
+            "version": self._safe_public_value(manifest.get("version", manifest.get("manifest_version"))),
+            "comfyui_commit": self._safe_public_value(comfyui_commit),
+            "custom_nodes": self._safe_public_value(custom_nodes or []),
+            "node_allowlist": self._safe_public_value(manifest.get("node_allowlist", [])),
+            "weight_files": copy.deepcopy(weight_files),
+        }
 
         return {
             "workflow_key": workflow["workflow_key"],
@@ -373,6 +550,20 @@ class WorkbenchService:
             "api_graph": self._safe_preview_graph(graph),
             "parameters": self._public_parameters(workflow.get("manifest") or {}),
             "models": models,
+            "manifest": manifest_evidence,
+            "weight_files": weight_files,
+            "node_references": node_references,
+            "review": self._review_evidence(workflow, model_row, node_references, manifest, weight_files),
+            "runtime": {
+                "mode": "offline",
+                "gpu_detection": {
+                    "status": "not_detected",
+                    "label": "未检测",
+                    "reason": "离线预览不启动实例、不执行节点，也不探测 GPU",
+                },
+                "native_comfy_ui": False,
+                "native_comfy_ui_label": "非原生 ComfyUI 在线 UI",
+            },
         }
 
     @classmethod

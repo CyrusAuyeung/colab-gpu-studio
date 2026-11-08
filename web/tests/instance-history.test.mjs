@@ -4,7 +4,7 @@ import { readFileSync } from 'node:fs';
 import { transform } from 'esbuild';
 
 test('duration helper formats completed, hour, missing and in-progress values honestly', async () => {
-  const source = readFileSync('src/lib/job-history.ts', 'utf8');
+  const source = readFileSync('src/lib/job-history.ts', 'utf8').replace(/^import .*?;\n/m, '') + '\n' + readFileSync('src/lib/job-stage-rows.ts', 'utf8');
   const { code } = await transform(source, { loader: 'ts', format: 'esm' });
   const module = await import('data:text/javascript;base64,' + Buffer.from(code).toString('base64'));
   assert.equal(module.formatDuration(0), '0秒');

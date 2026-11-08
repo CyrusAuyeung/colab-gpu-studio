@@ -2,8 +2,9 @@
 
 The scheduler remains the owner of leases, budget reservation, cancellation state,
 and remote runtime cleanup.  This module only adapts the existing executor
-``start``/``poll`` calls to a fixed, administrator-loaded Python plugin and
-exposes bounded ``cancel``/``cleanup`` hooks for deployment adapters.
+``start``/``poll`` calls to a fixed, administrator-loaded Python plugin,
+prepares hash-pinned weights when declared, and exposes bounded
+``cancel``/``cleanup`` hooks for deployment adapters.
 
 A plugin receives JSON-safe input selected from an immutable admitted job.  It
 never receives caller Python, a module name, a URL, a shell command, or the full
@@ -16,6 +17,7 @@ import base64
 import binascii
 import hashlib
 import importlib
+import json
 import re
 import time
 from dataclasses import dataclass
@@ -29,7 +31,10 @@ _MAX_OUTPUTS = 100
 _IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*$")
 _VERSION = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+$")
 _SAFE_FILENAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$")
+_SAFE_WEIGHT_PATH = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]{0,399}$")
+_SHA256 = re.compile(r"^[0-9a-fA-F]{64}$")
 _EXECUTOR_TYPE = re.compile(r"^[a-z][a-z0-9._-]{0,63}$")
+_MISSING = object()
 _FORBIDDEN_KEYS = {
     "code",
     "command",
@@ -53,9 +58,16 @@ class TrustedExecutorPlugin(Protocol):
     plugin_version: str
 
     def start(self, payload: dict) -> dict: ...
+    def prepare(self, payload: dict) -> dict: ...
     def poll(self, payload: dict) -> dict: ...
     def cancel(self, payload: dict) -> dict: ...
     def cleanup(self, payload: dict) -> dict: ...
+
+
+class TrustedExecutorPreparedPlugin(TrustedExecutorPlugin, Protocol):
+    """Optional extension required when the admitted snapshot has weights."""
+
+    def prepare(self, payload: dict) -> dict: ...
 
 
 @dataclass(frozen=True)
@@ -96,7 +108,76 @@ def _sha(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()[:24]
 
 
-def _cache_identity(config: Any, job: dict) -> tuple[str, str]:
+def _weight_manifest(job: dict) -> list[dict]:
+    """Return the immutable, hash-pinned weight manifest for a trusted job."""
+    raw_snapshot = job.get("snapshot")
+    snapshot: dict = raw_snapshot if isinstance(raw_snapshot, dict) else {}
+    raw_weights = snapshot.get("weight_manifest", _MISSING)
+    if raw_weights is _MISSING:
+        raw_weights = snapshot.get("trusted_executor_weights")
+    if raw_weights is None:
+        manifest = snapshot.get("manifest")
+        if isinstance(manifest, dict):
+            raw_weights = manifest.get("weight_files")
+            if not raw_weights and isinstance(manifest.get("dependencies"), dict):
+                raw_weights = manifest["dependencies"].get("weight_files")
+        else:
+            raw_weights = None
+    if raw_weights is None:
+        # Contract v1 jobs created before weight preparation existed remain
+        # loadable. New jobs that declare a manifest must make it non-empty.
+        return []
+    if not isinstance(raw_weights, list) or not raw_weights:
+        raise TrustedExecutorError("trusted executor requires a non-empty weight manifest")
+
+    normalized: list[dict] = []
+    seen: set[str] = set()
+    for item in raw_weights:
+        if not isinstance(item, dict):
+            raise TrustedExecutorError("trusted executor weight manifest item is invalid")
+        filename = item.get("target") or item.get("filename")
+        if (
+            not isinstance(filename, str)
+            or not _SAFE_WEIGHT_PATH.fullmatch(filename)
+            or filename.startswith("/")
+            or "\\" in filename
+            or any(part in {"", ".", ".."} for part in filename.split("/"))
+        ):
+            raise TrustedExecutorError("trusted executor weight filename is invalid")
+        if filename in seen:
+            raise TrustedExecutorError("trusted executor weight manifest contains duplicate filenames")
+        seen.add(filename)
+        revision = item.get("revision")
+        if not isinstance(revision, str) or not revision or len(revision) > 300:
+            raise TrustedExecutorError("trusted executor weight revision is required")
+        sha256 = item.get("sha256")
+        if not isinstance(sha256, str) or not _SHA256.fullmatch(sha256):
+            raise TrustedExecutorError("trusted executor weight sha256 is invalid")
+        size = item.get("size")
+        if isinstance(size, bool) or not isinstance(size, int) or size < 0:
+            raise TrustedExecutorError("trusted executor weight size is invalid")
+        normalized_item = {
+            "filename": filename,
+            "revision": revision,
+            "sha256": sha256.lower(),
+            "size": size,
+        }
+        if item.get("repo_id") is not None:
+            repo_id = item.get("repo_id")
+            if not isinstance(repo_id, str) or not repo_id or len(repo_id) > 200:
+                raise TrustedExecutorError("trusted executor weight repo_id is invalid")
+            normalized_item["repo_id"] = repo_id
+        normalized.append(normalized_item)
+    return sorted(normalized, key=lambda item: item["filename"])
+
+
+def _weight_manifest_digest(weights: list[dict]) -> str:
+    return hashlib.sha256(json.dumps(weights, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+
+
+def _cache_identity(
+    config: Any, job: dict, *, validate_weights: bool = True
+) -> tuple[str, str, list[dict], str | None]:
     model_id = job.get("model_id")
     snapshot = job.get("snapshot")
     revision = snapshot.get("model_revision") if isinstance(snapshot, dict) else None
@@ -107,14 +188,24 @@ def _cache_identity(config: Any, job: dict) -> tuple[str, str]:
     namespace = getattr(config, "trusted_executor_cache_namespace", "trusted")
     if not isinstance(namespace, str) or not re.fullmatch(r"[a-z0-9][a-z0-9._-]{0,63}", namespace):
         raise TrustedExecutorError("trusted executor cache namespace is invalid")
-    return f"{namespace}/{_sha(model_id)}/{_sha(revision)}", revision
+    try:
+        weights = _weight_manifest(job)
+    except TrustedExecutorError:
+        if validate_weights:
+            raise
+        # Cancellation/cleanup must remain available even when a malformed
+        # preparation declaration is found; do not make release depend on it.
+        weights = []
+    weights_digest = _weight_manifest_digest(weights) if weights else None
+    suffix = f"/{weights_digest[:24]}" if weights_digest else ""
+    return f"{namespace}/{_sha(model_id)}/{_sha(revision)}{suffix}", revision, weights, weights_digest
 
 
 def build_trusted_executor_input(
     config: Any, handle: dict, job: dict, execution_id: str | None, operation: str
 ) -> dict:
     """Build the only payload a trusted plugin may receive."""
-    if operation not in {"start", "poll", "cancel", "cleanup"}:
+    if operation not in {"prepare", "start", "poll", "cancel", "cleanup"}:
         raise TrustedExecutorError("trusted executor operation is invalid")
     if not isinstance(handle, dict):
         raise TrustedExecutorError("trusted executor lease handle is invalid")
@@ -129,7 +220,11 @@ def build_trusted_executor_input(
         execution_id = job.get("execution_id")
     if not isinstance(execution_id, str) or not execution_id:
         raise TrustedExecutorError("trusted executor execution_id is required")
-    cache_namespace, revision = _cache_identity(config, job)
+    cache_namespace, revision, weights, weights_digest = _cache_identity(
+        config, job, validate_weights=operation not in {"cancel", "cleanup"}
+    )
+    if operation == "prepare" and not weights:
+        raise TrustedExecutorError("trusted executor prepare requires a weight manifest")
     params = job.get("params")
     if not isinstance(params, dict):
         params = (job.get("snapshot") or {}).get("resolved_params", {})
@@ -137,7 +232,7 @@ def build_trusted_executor_input(
         raise TrustedExecutorError("trusted executor parameters must be an object")
     _scan_forbidden(params)
     deadline = job.get("deadline_epoch")
-    if operation in {"start", "poll"}:
+    if operation in {"prepare", "start", "poll"}:
         if isinstance(deadline, bool) or not isinstance(deadline, (int, float)):
             raise TrustedExecutorError("trusted executor lease deadline is required")
         if time.time() > float(deadline):
@@ -151,6 +246,9 @@ def build_trusted_executor_input(
         }
     if not all(isinstance(value, str) and value for value in plugin.values()):
         raise TrustedExecutorError("trusted executor identity is unavailable")
+    cache = {"namespace": cache_namespace, "model_revision": revision}
+    if weights_digest is not None:
+        cache["weights_manifest_sha256"] = weights_digest
     return {
         "schema": PLUGIN_INPUT_SCHEMA,
         "contract_version": PLUGIN_CONTRACT_VERSION,
@@ -171,7 +269,14 @@ def build_trusted_executor_input(
             "version": job.get("workflow_version"),
         },
         "parameters": params,
-        "cache": {"namespace": cache_namespace, "model_revision": revision},
+        "cache": cache,
+        "preparation": {
+            "required": bool(weights),
+            "cache_namespace": cache_namespace,
+            "model_revision": revision,
+            "weights_manifest_sha256": weights_digest,
+            "weights": weights,
+        },
         "budget": {
             "reserved_units": job.get("budget_reserved"),
             "estimated_units": job.get("budget_units", job.get("estimated_units")),
@@ -182,6 +287,36 @@ def build_trusted_executor_input(
             "cleanup_final_state": job.get("cleanup_final_state"),
         },
         "plugin": plugin,
+    }
+
+
+def _validate_preparation_result(payload: dict, preparation: Any) -> dict:
+    if not isinstance(preparation, dict):
+        raise TrustedExecutorError("trusted executor preparation report is invalid")
+    expected = payload["preparation"]
+    if preparation.get("cache_namespace") != expected["cache_namespace"]:
+        raise TrustedExecutorError("trusted executor preparation cache namespace mismatch")
+    if preparation.get("model_revision") != expected["model_revision"]:
+        raise TrustedExecutorError("trusted executor preparation model revision mismatch")
+    if preparation.get("weights_manifest_sha256") != expected["weights_manifest_sha256"]:
+        raise TrustedExecutorError("trusted executor preparation manifest digest mismatch")
+    reported = preparation.get("weights")
+    if not isinstance(reported, list) or len(reported) != len(expected["weights"]):
+        raise TrustedExecutorError("trusted executor preparation weight report is invalid")
+    normalized = []
+    for wanted, actual in zip(expected["weights"], reported, strict=True):
+        if not isinstance(actual, dict):
+            raise TrustedExecutorError("trusted executor preparation weight report is invalid")
+        if any(actual.get(key) != wanted[key] for key in wanted):
+            raise TrustedExecutorError("trusted executor preparation weight identity mismatch")
+        if actual.get("verified_sha256") != wanted["sha256"]:
+            raise TrustedExecutorError("trusted executor preparation sha256 was not verified")
+        normalized.append({**wanted, "verified_sha256": wanted["sha256"]})
+    return {
+        "cache_namespace": expected["cache_namespace"],
+        "model_revision": expected["model_revision"],
+        "weights_manifest_sha256": expected["weights_manifest_sha256"],
+        "weights": normalized,
     }
 
 
@@ -198,8 +333,22 @@ def _validate_plugin_result(payload: dict, result: Any) -> dict:
     if result.get("cache") != expected_cache:
         raise TrustedExecutorError("trusted executor output cache identity mismatch")
     state = result.get("state")
-    if state not in {"running", "completed", "failed", "cancelled", "cancelling", "cleaned", "cleanup_pending"}:
+    if state not in {
+        "prepared",
+        "running",
+        "completed",
+        "failed",
+        "cancelled",
+        "cancelling",
+        "cleaned",
+        "cleanup_pending",
+    }:
         raise TrustedExecutorError("trusted executor output state is invalid")
+    preparation = None
+    if payload.get("operation") == "prepare":
+        if state != "prepared":
+            raise TrustedExecutorError("trusted executor preparation state is invalid")
+        preparation = _validate_preparation_result(payload, result.get("preparation"))
     outputs = result.get("outputs", [])
     if not isinstance(outputs, list) or len(outputs) > _MAX_OUTPUTS:
         raise TrustedExecutorError("trusted executor output list is invalid")
@@ -237,6 +386,7 @@ def _validate_plugin_result(payload: dict, result: Any) -> dict:
         "error_code": result.get("error_code"),
         "message": str(result.get("message", ""))[:1400],
         "cache": expected_cache,
+        **({"preparation": preparation} if preparation is not None else {}),
     }
 
 
@@ -262,6 +412,9 @@ class TrustedExecutorAdapter:
 
     def start(self, handle: dict, job: dict, execution_id: str) -> dict:
         payload = build_trusted_executor_input(self.config, handle, job, execution_id, "start")
+        if payload["preparation"]["required"]:
+            preparation_payload = build_trusted_executor_input(self.config, handle, job, execution_id, "prepare")
+            self._call("prepare", preparation_payload)
         result = self._call("start", payload)
         return {
             "execution_id": execution_id,
@@ -355,6 +508,7 @@ __all__ = [
     "PluginAllowlistEntry",
     "TrustedExecutorAdapter",
     "TrustedExecutorError",
+    "TrustedExecutorPreparedPlugin",
     "build_trusted_executor_input",
     "select_registered_executor_type",
     "load_trusted_executor",

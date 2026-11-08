@@ -113,6 +113,33 @@ def test_public_and_graph_preview_sanitize_nested_metadata_credentials():
     assert "nested-client-secret" not in repr(graph)
 
 
+@pytest.mark.parametrize(
+    "credential_key",
+    [
+        "connection_info",
+        "connectionInfo",
+        "connectioninfo",
+        "connection_string",
+        "connectionString",
+        "connection-string",
+    ],
+)
+def test_preview_graph_blocks_connection_credential_aliases_exactly(credential_key):
+    result = WorkbenchService._safe_preview_graph(
+        {
+            credential_key: "runtime-secret",
+            "nested": [{credential_key: "nested-runtime-secret", "label": "safe"}],
+            "connection_id": "public-id",
+        }
+    )
+
+    assert credential_key not in result
+    assert result["nested"] == [{"label": "safe"}]
+    assert result["connection_id"] == "public-id"
+    assert "runtime-secret" not in repr(result)
+    assert "nested-runtime-secret" not in repr(result)
+
+
 def test_reviewed_graph_action_is_readable_from_unverified_instance():
     service = WorkbenchService(repo=PreviewRepo())
 
@@ -180,3 +207,66 @@ def test_workflow_preview_route_uses_authenticated_owner_and_version():
 
     assert response.status_code == 200
     assert response.json()["data"]["workflow_key"] == "offline-demo"
+
+
+def test_reviewed_graph_preview_exposes_stored_dependency_evidence_without_gpu_claims():
+    repo = PreviewRepo()
+    workflow = repo.rows["workflows"][0]
+    workflow["review_approved"] = True
+    workflow["reviewed_by"] = "reviewer"
+    workflow["reviewed_at"] = 123
+    workflow["smoke_test_passed"] = False
+    workflow["manifest"] = {
+        "version": "1.0.0",
+        "comfyui_commit": "a" * 40,
+        "node_allowlist": ["Prompt", "SaveImage"],
+        "dependencies": {
+            "weight_files": [
+                {
+                    "repo_id": "org/model",
+                    "filename": "model.safetensors",
+                    "revision": "b" * 40,
+                    "sha256": "c" * 64,
+                    "target": "checkpoints/model.safetensors",
+                },
+                {
+                    "repo_id": "org/missing",
+                    "filename": "missing.safetensors",
+                    "revision": "d" * 40,
+                    "sha256": "e" * 64,
+                    "target": "checkpoints/missing.safetensors",
+                    "present": False,
+                    "verification": {"verified": True, "source": "prep_report", "status": "missing"},
+                },
+                {
+                    "repo_id": "org/self-declared",
+                    "filename": "self-declared.safetensors",
+                    "revision": "1" * 40,
+                    "sha256": "2" * 64,
+                    "target": "checkpoints/self-declared.safetensors",
+                    "present": True,
+                },
+            ],
+            "custom_nodes": [{"repo": "org/nodes", "commit": "f" * 40}],
+        },
+        "parameters": workflow["manifest"]["parameters"],
+    }
+    repo.rows["models"][0].update({"revision": "1" * 40, "review_approved": True, "license_accepted": True})
+
+    result = WorkbenchService(repo=repo).get_reviewed_graph(
+        "owner", {"workflow_key": "offline-demo", "workflow_version": 1}
+    )
+
+    assert result["weight_files"][0]["revision"] == "b" * 40
+    assert result["weight_files"][0]["sha256"] == "c" * 64
+    assert result["weight_files"][0]["availability"]["status"] == "not_detected"
+    assert result["weight_files"][1]["availability"]["status"] == "confirmed_missing"
+    assert result["weight_files"][2]["availability"]["status"] == "not_detected"
+    assert result["node_references"] == [
+        {"node_id": "1", "class_type": "Prompt", "inputs": {"text": "hello"}},
+        {"node_id": "2", "class_type": "SaveImage", "inputs": {"images": ["1", 0]}},
+    ]
+    assert result["review"]["workflow"]["status"] == "confirmed"
+    assert result["review"]["smoke"]["status"] == "not_confirmed"
+    assert result["runtime"]["gpu_detection"]["status"] == "not_detected"
+    assert result["runtime"]["native_comfy_ui"] is False

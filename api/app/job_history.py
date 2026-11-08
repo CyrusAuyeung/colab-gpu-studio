@@ -130,6 +130,27 @@ def _event_durations(events) -> tuple[dict[str, float], dict[str, dict]]:
     return {name: _round(seconds) for name, seconds in totals.items()}, detail
 
 
+def _event_stage(state: str) -> str | None:
+    for name, states in _EVENT_STAGES.items():
+        if state in states:
+            return name
+    return None
+
+
+def _active_stage_start(rows: list[tuple[float, Mapping]], state: str) -> float | None:
+    """Find the beginning of the latest contiguous lifecycle stage."""
+    matching = [index for index, (_, event) in enumerate(rows) if event.get("state") == state]
+    if not matching:
+        return None
+    index = matching[-1]
+    stage = _event_stage(state)
+    if stage is None:
+        return rows[index][0]
+    while index > 0 and _event_stage(str(rows[index - 1][1].get("state") or "")) == stage:
+        index -= 1
+    return rows[index][0]
+
+
 def job_timing_details(job: Mapping, events, *, now: float | None = None) -> dict[str, dict]:
     """Return honest timing metadata keyed by stage.
 
@@ -150,7 +171,7 @@ def job_timing_details(job: Mapping, events, *, now: float | None = None) -> dic
     if prep_seconds is not None:
         details["prep_cache"] = {"seconds": _round(prep_seconds), "source": "worker", "status": "completed"}
 
-    event_timings, event_details = _event_durations(events)
+    _, event_details = _event_durations(events)
     for name, value in event_details.items():
         details[name] = value
 
@@ -159,21 +180,21 @@ def job_timing_details(job: Mapping, events, *, now: float | None = None) -> dic
         current = str(job.get("stage") or "").strip()
         if current in _WORKER_KEYS and current not in details:
             details[current] = {"seconds": None, "source": "worker", "status": "in_progress"}
-        if state in _EVENT_STAGES["cleanup"] and "cleanup" not in details:
-            details["cleanup"] = {"seconds": None, "source": "events", "status": "in_progress"}
-        if state in _EVENT_STAGES["queue"] and "queue" not in details:
-            details["queue"] = {"seconds": None, "source": "events", "status": "in_progress"}
+        event_stage = _event_stage(state)
+        if event_stage:
+            details[event_stage] = {"seconds": None, "source": "events", "status": "in_progress"}
+        elif state in _ACTIVE_STATES and current not in _WORKER_KEYS:
+            # If the scheduler has persisted a lifecycle state but the worker
+            # has not supplied a finer-grained stage, expose that state rather
+            # than guessing a completed duration.
+            known_current = current if current in _EVENT_STAGES or current in _ACTIVE_STATES else ""
+            event_stage = known_current or state
+            details[event_stage] = {"seconds": None, "source": "events", "status": "in_progress"}
         if now is not None and state in _ACTIVE_STATES:
             rows = _event_rows(events)
-            current_start = next((stamp for stamp, event in reversed(rows) if event.get("state") == state), None)
-            if current_start is not None and state in _EVENT_STAGES["cleanup"]:
-                details["cleanup"] = {
-                    "seconds": _round(max(0.0, now - current_start)),
-                    "source": "events",
-                    "status": "in_progress",
-                }
-            elif current_start is not None and state in _EVENT_STAGES["queue"]:
-                details["queue"] = {
+            current_start = _active_stage_start(rows, state)
+            if current_start is not None and event_stage:
+                details[event_stage] = {
                     "seconds": _round(max(0.0, now - current_start)),
                     "source": "events",
                     "status": "in_progress",
@@ -181,9 +202,9 @@ def job_timing_details(job: Mapping, events, *, now: float | None = None) -> dic
     return details
 
 
-def job_timings(job: Mapping, events) -> dict[str, float]:
+def job_timings(job: Mapping, events, *, now: float | None = None) -> dict[str, float]:
     """Return only completed numeric stage seconds for backward-compatible APIs."""
-    details = job_timing_details(job, events)
+    details = job_timing_details(job, events, now=now)
     return {
         name: value["seconds"]
         for name, value in details.items()

@@ -58,6 +58,12 @@ def test_history_is_owner_scoped_persisted_only_and_redacts_error_logs():
     assert [job["job_id"] for job in data["jobs"]] == ["job-1"]
     job = data["jobs"][0]
     assert job["error"]["code"] == "gpu_failed"
+    assert job["timing_details"]["sampling"] == {
+        "seconds": 4.2,
+        "source": "worker",
+        "status": "completed",
+    }
+    assert job["logs"] == job["events"]
     assert "https://" not in str(job)
     assert "token" not in str(job).lower()
     assert job["artifacts"][0]["filename"] == "result.png"

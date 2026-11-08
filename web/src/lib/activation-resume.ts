@@ -66,6 +66,12 @@ export function shouldAcceptSmoke(snapshot: ActivationResumeSnapshot | null | un
     && getActivationStep(snapshot, 'accept_smoke')?.done !== true;
 }
 
+export function terminalSmokeJobId(snapshot: ActivationResumeSnapshot | null | undefined): string | null {
+  const jobId = smokeJobId(snapshot);
+  const state = smokeState(snapshot);
+  return jobId && (COMPLETED_SMOKE_STATES.has(state) || FAILED_SMOKE_STATES.has(state)) ? jobId : null;
+}
+
 /** Prefer the server's limit; keep this tolerant while the API field is coordinated. */
 export function getSmokeRuntimeMinutes(snapshot: ActivationResumeSnapshot | null | undefined): number | null {
   const source = snapshot || {};

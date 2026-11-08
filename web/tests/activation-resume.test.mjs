@@ -10,6 +10,7 @@ import {
   isSmokePolling,
   shouldCreateSmoke,
   shouldAcceptSmoke,
+  terminalSmokeJobId,
 } from '../src/lib/activation-resume.ts';
 
 const step = (key, done = false) => ({ key, label: key, done });
@@ -57,6 +58,12 @@ test('failed smoke is not treated as a resumable completed task', () => {
   assert.equal(hasExistingSmoke(current), false);
   assert.equal(shouldCreateSmoke(current), true);
   assert.equal(shouldAcceptSmoke(current), false);
+});
+
+test('terminal smoke snapshots expose the persisted task for detail/log opening', () => {
+  assert.equal(terminalSmokeJobId(snapshot({ smoke: { job_id: 'job-failed', state: 'failed' } })), 'job-failed');
+  assert.equal(terminalSmokeJobId(snapshot({ smoke: { job_id: 'job-completed', state: 'completed' } })), 'job-completed');
+  assert.equal(terminalSmokeJobId(snapshot({ smoke: { job_id: 'job-running', state: 'running' } })), null);
 });
 
 test('runtime copy reads the backend-provided limit instead of a UI constant', () => {

@@ -8,25 +8,31 @@ is an explicitly labelled JSON fixture produced from the admitted payload.
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 
 contract_version = "1"
 plugin_version = "1.0.0"
+_OFFLINE_WEIGHT = b"offline weight bytes"
+_OFFLINE_WEIGHT_SHA256 = hashlib.sha256(_OFFLINE_WEIGHT).hexdigest()
 
 
 class OfflineFixtureExecutor:
-    """Small trusted-plugin implementation that exercises all four hooks."""
+    """Small trusted-plugin implementation that exercises preparation and lifecycle hooks."""
 
     contract_version = contract_version
     plugin_version = plugin_version
     idempotent = True
 
-    def __init__(self) -> None:
-        self._started: set[str] = set()
-
     @staticmethod
-    def _result(payload: dict, state: str, *, outputs: list[dict] | None = None) -> dict:
-        return {
+    def _result(
+        payload: dict,
+        state: str,
+        *,
+        outputs: list[dict] | None = None,
+        preparation: dict | None = None,
+    ) -> dict:
+        result = {
             "schema": "trusted-executor-output-v1",
             "contract_version": contract_version,
             "execution_id": payload["execution_id"],
@@ -36,15 +42,43 @@ class OfflineFixtureExecutor:
             "timings": {},
             "message": "offline fixture only; no GPU, model service, Comfy, Laya, or network was used",
         }
+        if preparation is not None:
+            result["preparation"] = preparation
+        return result
+
+    def prepare(self, payload: dict) -> dict:
+        """Verify the tiny local fixture; production plugins must hash real bytes."""
+        weights = payload["preparation"]["weights"]
+        if weights != [
+            {
+                "filename": "weights/laya-fixture.bin",
+                "revision": "weights-rev-1",
+                "sha256": _OFFLINE_WEIGHT_SHA256,
+                "size": len(_OFFLINE_WEIGHT),
+            }
+        ]:
+            raise ValueError("offline fixture weight manifest does not match local bytes")
+        preparation = payload["preparation"]
+        return self._result(
+            payload,
+            "prepared",
+            preparation={
+                "cache_namespace": preparation["cache_namespace"],
+                "model_revision": preparation["model_revision"],
+                "weights_manifest_sha256": preparation["weights_manifest_sha256"],
+                "weights": [{**weight, "verified_sha256": weight["sha256"]} for weight in weights],
+            },
+        )
 
     def start(self, payload: dict) -> dict:
-        self._started.add(payload["execution_id"])
+        self.prepare(payload)
         return self._result(payload, "running")
 
     def poll(self, payload: dict) -> dict:
         execution_id = payload["execution_id"]
-        if execution_id not in self._started:
-            return self._result(payload, "failed")
+        # This pure fixture is reconstructible from the admitted payload.
+        # Real plugins must persist lifecycle state outside the Python object.
+        self.prepare(payload)
         artifact = {
             "artifact_type": "trusted-executor-offline-fixture",
             "execution_id": execution_id,
@@ -71,7 +105,6 @@ class OfflineFixtureExecutor:
         return self._result(payload, "cancelled")
 
     def cleanup(self, payload: dict) -> dict:
-        self._started.discard(payload["execution_id"])
         return self._result(payload, "cleaned")
 
 
