@@ -280,16 +280,14 @@ class Store:
         ``dispatch_lock`` is also used around scheduler/watchdog list scans.  A
         large historical job snapshot can therefore outlive the HTTP timeout,
         even though admission only needs the database transaction to be
-        atomic.  Admissions use a separate cross-process lock; the local
-        dispatch fallback is retained for the intentionally nested lock case
-        covered by the legacy in-memory tests.
+        atomic.  Admissions always use the separate cross-process lock, even
+        when a caller already holds ``dispatch_lock``.
         """
         import time
 
-        lock_context = self.dispatch_lock if self._dispatch_held_by_current_thread() else self._admission_try_lock
         deadline = time.monotonic() + timeout
         while True:
-            with lock_context() as acquired:
+            with self._admission_try_lock() as acquired:
                 if acquired:
                     yield True
                     return

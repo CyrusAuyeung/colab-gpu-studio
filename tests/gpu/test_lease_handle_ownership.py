@@ -147,6 +147,7 @@ def test_watchdog_orphan_cleanup_uses_lease_owner_handle():
     repo.update("leases", lease["id"], {"handle": {**lease["handle"], "job_id": first_id, "owner_job_id": first_id}}, "u")
     # owner job becomes terminal (e.g. crashed worker) -> watchdog must still be able to delete the runtime
     repo.update("jobs", owner, {"state": "failed"}, "u")
+    repo.update("instances", lease["instance_id"], {"state": "releasing", "current_job_id": None, "account_id": lease["account_id"]}, "u")
     scheduler.watchdog()
     assert repo.list("leases", "u")[0]["state"] == "deleted"
     assert provider.delete_calls == 1

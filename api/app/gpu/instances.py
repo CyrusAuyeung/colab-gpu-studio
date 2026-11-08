@@ -639,6 +639,10 @@ class InstanceService:
             if instance is None:
                 raise AllocationError("job has no instance")
             data = self._data(instance)
+            if instance.state in {"deleted", "unknown", "releasing", "cleanup_pending", "quarantined"}:
+                raise InstanceConflict("实例正在清理，不能接管租约")
+            if data.get("cleanup_claim_token"):
+                raise InstanceConflict("实例已被清理流程围栏")
             if data.get("current_job_id") not in {None, job.get("id")}:
                 raise InstanceConflict("instance is owned by another job")
             deadline = lease_data.get("hard_deadline_at") or lease_data.get("deadline_epoch")
