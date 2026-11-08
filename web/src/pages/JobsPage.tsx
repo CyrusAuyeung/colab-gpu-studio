@@ -3,6 +3,7 @@ import { Zap, Search, RefreshCw, Image as ImageIcon, Film, Loader, ChevronRight,
 import { type GpuJob } from '../lib/gpu-api';
 import styles from '../gpu.module.css';
 import { formatDateTime, jobSize, progressPercent, readableState, terminalStates } from '../lib/ui-helpers';
+import { jobStageLabel } from '../lib/job-stage-rows';
 
 const RUNNING = ['running', 'uploading', 'saving', 'active', 'started', 'creating', 'reserved', 'validating', 'cleanup_pending'];
 const WAITING = ['queued', 'pending', 'preparing'];
@@ -141,7 +142,7 @@ export function TasksPanel({
                 {(running || waiting) && (
                   <div className={styles.progressBlock}>
                     <div className={styles.progressText}>
-                      <span>{running ? (pct !== null ? `生成中 ${pct}%` : '生成中…') : '排队等待中'}</span>
+                      <span>{running ? (job.stage ? jobStageLabel(job.stage) : pct !== null ? `生成中 ${pct}%` : '生成中…') : '排队等待中'}</span>
                     </div>
                     <div className={styles.progress} data-indeterminate={pct === null}><span style={pct !== null ? { width: `${pct}%` } : undefined} /></div>
                   </div>
