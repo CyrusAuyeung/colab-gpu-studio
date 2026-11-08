@@ -3,6 +3,7 @@ import { ChevronDown, Search } from 'lucide-react';
 import type { GpuWorkflow } from '../lib/gpu-api';
 import { Pager } from '../components/ui';
 import { WorkflowActivationPanel } from '../components/WorkflowActivation';
+import { WorkflowGraphPreview, type WorkflowGraphPreviewData } from '../components/WorkflowGraphPreview';
 import styles from '../gpu.module.css';
 import { workflowState } from '../lib/ui-helpers';
 
@@ -11,6 +12,18 @@ const VERSIONS_SHOWN = 4;
 
 const cmp = (a: GpuWorkflow, b: GpuWorkflow) =>
   String(b.workflow_version).localeCompare(String(a.workflow_version), undefined, { numeric: true });
+
+async function fetchWorkflowGraphPreview(workflow: Pick<GpuWorkflow, 'workflow_key' | 'workflow_version' | 'state'>): Promise<WorkflowGraphPreviewData> {
+  const query = new URLSearchParams({ version: String(workflow.workflow_version) });
+  if (workflow.state !== 'published') query.set('draft', 'true');
+  const response = await fetch(`/api/gpu/workflows/${encodeURIComponent(workflow.workflow_key)}/preview?${query}`, { credentials: 'include' });
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    const error = body && typeof body === 'object' && 'error' in body ? (body as { error?: { message?: string } }).error : undefined;
+    throw new Error(error?.message || `预览请求失败（${response.status}）`);
+  }
+  return (body && typeof body === 'object' && 'data' in body ? body.data : body) as WorkflowGraphPreviewData;
+}
 
 export function WorkflowsPanel({
   workflows, onImport, onValidate, onPublish, onRollback, onActivated,
@@ -26,6 +39,7 @@ export function WorkflowsPanel({
   const [query, setQuery] = useState('');
   const [page, setPage] = useState(0);
   const [activating, setActivating] = useState<string | null>(null);
+  const [previewing, setPreviewing] = useState<GpuWorkflow | null>(null);
   const [openKeys, setOpenKeys] = useState<Set<string>>(new Set());
   const [showAll, setShowAll] = useState<Set<string>>(new Set());
   const fileRef = useRef<HTMLInputElement>(null);
@@ -112,6 +126,7 @@ export function WorkflowsPanel({
                             <span className="pill" data-state={wf.active ? 'active' : wf.state}>{workflowState(wf.state, wf.active)}</span>
                           </span>
                           <span className={styles.versionActions}>
+                            <button className="button secondary small" type="button" onClick={() => setPreviewing(wf)}>离线预览</button>
                             {!published && (
                               <button className="button small" type="button" onClick={() => setActivating(activating === wf.id ? null : wf.id)}>
                                 {activating === wf.id ? '收起启用向导' : '一键启用'}
@@ -128,6 +143,7 @@ export function WorkflowsPanel({
                               workflow={wf}
                               onClose={() => setActivating(null)}
                               onDone={onActivated}
+                              onPreview={() => setPreviewing(wf)}
                             />
                           </div>
                         )}
@@ -150,6 +166,7 @@ export function WorkflowsPanel({
       )}
 
       <Pager page={safePage} pages={pages} onChange={setPage} />
+      {previewing && <WorkflowGraphPreview workflow={previewing} loadPreview={() => fetchWorkflowGraphPreview(previewing)} onClose={() => setPreviewing(null)} />}
     </div>
   );
 }

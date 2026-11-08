@@ -231,3 +231,74 @@ def test_describe_does_not_claim_writes_for_history_or_unverified_real_instance(
         assert "queue_reviewed_workflow" not in described["capabilities"]
         assert "stop_current_job" not in described["capabilities"]
         assert described["actions"] == described["capabilities"]
+
+
+def test_unverified_real_stop_is_rejected_before_trusted_mcp_call():
+    class FakeTrustedMcp:
+        def __init__(self):
+            self.calls = []
+
+        def stop_current_job(self, *args):
+            self.calls.append(args)
+            return {"accepted": True}
+
+    repo = MemoryRepo()
+    trusted_mcp = FakeTrustedMcp()
+    service = WorkbenchService(repo=repo, trusted_mcp=trusted_mcp)
+    instance = {
+        "id": "instance-real",
+        "owner_id": "owner",
+        "state": "ready",
+        "provider": "colab",
+        "verified": False,
+        "current_job_id": "job-1",
+    }
+    repo.rows["jobs"] = [{
+        "id": "job-1",
+        "owner_id": "owner",
+        "instance_id": "instance-real",
+        "state": "running",
+    }]
+
+    with pytest.raises(WorkbenchError) as exc:
+        service.execute("owner", instance, "stop_current_job", {}, key="stop-op")
+
+    assert exc.value.code == "COMFY_UNVERIFIED"
+    assert trusted_mcp.calls == []
+
+
+def test_preview_artifacts_recursively_sanitize_nested_metadata():
+    repo = MemoryRepo()
+    service, instance = _service(repo)
+    repo.rows["jobs"] = [{
+        "id": "job-1",
+        "owner_id": "owner",
+        "instance_id": instance["id"],
+        "state": "completed",
+        "output_asset_ids": ["asset-1"],
+    }]
+    repo.rows["assets"] = [{
+        "id": "asset-1",
+        "owner_id": "owner",
+        "metadata": {
+            "label": "safe",
+            "api_key": "nested-api-secret",
+            "items": [{"private_key": "nested-private-secret", "value": 1}],
+        },
+        "thumbnail_url": "https://signed.example.invalid/file?token=leak",
+    }]
+
+    result = service.execute(
+        "owner",
+        instance,
+        "preview_artifacts",
+        {"job_id": "job-1"},
+    )
+
+    assert result["artifacts"] == [{
+        "id": "asset-1",
+        "owner_id": "owner",
+        "metadata": {"label": "safe", "items": [{"value": 1}]},
+    }]
+    assert "nested-api-secret" not in repr(result)
+    assert "signed.example.invalid" not in repr(result)

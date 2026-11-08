@@ -38,41 +38,15 @@ from .gpu.rates import mode_param
 from .gpu.registry import Registry
 from .gpu.repository import Repository
 from .gpu.scheduler import Scheduler
+from .history_routes import router as history_router
 from .instance_routes import router as instance_router
+from .job_history import job_timing_details, job_timings
 from .job_schemas import JobInput
 from .oauth_config_routes import router as oauth_config_router
 from .presenters import public_asset, public_job
 from .review_routes import router as review_router
 from .security import sign_session
 from .storage import asset_path, delete_asset_file, save_asset
-
-
-def _ts(value):
-    from datetime import datetime, timezone
-
-    moment = datetime.fromisoformat(value)
-    return (moment if moment.tzinfo else moment.replace(tzinfo=timezone.utc)).timestamp()
-
-
-def job_timings(job, events):
-    """Seconds per stage: worker-measured stages plus allocate/upload/delete from scheduler events."""
-    timings = dict(job.get("worker_timings") or {})
-    if job.get("prep_seconds") is not None:
-        timings["prep_cache"] = job["prep_seconds"]
-    entered = {}
-    for event in sorted(events, key=lambda e: e["created_at"]):
-        entered.setdefault(event["state"], _ts(event["created_at"]))
-    end = next((entered[s] for s in ("completed", "failed", "cancelled") if s in entered), None)
-    spans = {
-        "allocate": ("allocating", "loading"),
-        "upload": ("uploading", "cleaning_up"),
-        "delete": ("cleaning_up", None),
-    }
-    for name, (first, last) in spans.items():
-        stop = end if last is None else entered.get(last)
-        if first in entered and stop is not None:
-            timings[name] = round(stop - entered[first], 1)
-    return timings
 
 
 def usage(st, owner):
@@ -557,7 +531,10 @@ def get_job(job_id: str, request: Request, user=Depends(current_user), st=Depend
     job = own(repo, "jobs", job_id, user)
     result = public_job(job)
     result["events"] = [e for e in repo.list("events", user["id"]) if e.get("job_id") == job_id][::-1]
-    result["timings"] = job_timings(job, result["events"])
+    result["logs"] = result["events"]
+    now = time.time()
+    result["timings"] = job_timings(job, result["events"], now=now)
+    result["timing_details"] = job_timing_details(job, result["events"], now=now)
     allowed={'id','state','attempt','started_at','finished_at','error_code'}
     result['attempts']=sorted([{k:v for k,v in row.items() if k in allowed}
         for row in repo.list('executions',user['id']) if row.get('job_id')==job_id],key=lambda row:row.get('attempt',0))
@@ -887,6 +864,7 @@ if os.getenv("STUDIO_ATELIER_ENABLED", "0").strip().lower() in {"1", "true"}:
     app.include_router(atelier_router)
 app.include_router(account_router)
 app.include_router(instance_router)
+app.include_router(history_router)
 app.include_router(compute_router)
 app.include_router(review_router)
 app.include_router(oauth_config_router)

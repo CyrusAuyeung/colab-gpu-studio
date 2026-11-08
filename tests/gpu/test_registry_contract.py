@@ -1,3 +1,4 @@
+import copy
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
@@ -136,6 +137,107 @@ def test_registry_validate_allows_disabled_real_model_but_publish_requires_licen
     )
     with pytest.raises(ValueError, match="许可|license"):
         registry.publish("owner", row["id"], confirmed=True)
+
+
+def _real_publish_fixture(tmp_path):
+    from app import review_routes
+
+    repo = Repository(_store(tmp_path))
+    registry = Registry(repo)
+    repo.create(
+        "models",
+        "owner",
+        {
+            "model_id": "real",
+            "revision": "b" * 40,
+            "enabled": True,
+            "is_mock": False,
+            "license_status": "approved",
+        },
+    )
+    manifest, graph, info = registry._template()
+    manifest = copy.deepcopy(manifest)
+    manifest["model_id"] = "real"
+    manifest["dependencies"] = {
+        "comfyui_commit": "a" * 40,
+        "custom_nodes": [],
+        "weight_files": [],
+    }
+    graph = {
+        "1": {
+            "class_type": "CheckpointLoaderSimple",
+            "inputs": {"text": "demo", "steps": 1, "seed": 1},
+        }
+    }
+    info = {
+        "CheckpointLoaderSimple": {
+            "input": {"required": {"text": ["STRING"], "steps": ["INT"], "seed": ["INT"]}}
+        }
+    }
+    row = repo.create(
+        "workflows",
+        "owner",
+        {
+            "workflow_key": "real",
+            "workflow_version": 1,
+            "model_id": "real",
+            "manifest": manifest,
+            "api_graph": graph,
+            "object_info": info,
+            "state": "draft",
+        },
+    )
+    registry.validate("owner", row["id"])
+    row = repo.get("workflows", row["id"], "owner")
+    repo.update(
+        "workflows",
+        row["id"],
+        {
+            "review_approved": True,
+            "smoke_test_passed": True,
+            "smoke_test_kind": "real",
+        },
+        "owner",
+    )
+    row = repo.get("workflows", row["id"], "owner")
+    signature = review_routes._smoke_compatibility_signature(row["id"], row, "b" * 40)
+    job, _ = repo.create_job("owner", {"workflow_smoke": True}, "real-smoke")
+    repo.update(
+        "jobs",
+        job["id"],
+        {
+            "state": "completed",
+            "provider": "colab",
+            "workflow_smoke": True,
+            "target_workflow_id": row["id"],
+            "target_model_id": "real",
+            "workflow_key": "real",
+            "workflow_version": 1,
+            "smoke_compatibility_signature": signature,
+            "smoke_accepted": True,
+            "acceptance_state": "accepted",
+        },
+        "owner",
+    )
+    repo.update("workflows", row["id"], {"smoke_job_id": job["id"]}, "owner")
+    return repo, registry, row["id"], job["id"]
+
+
+def test_registry_rejects_historical_real_smoke_flags_without_current_job(tmp_path):
+    repo, registry, workflow_id, _ = _real_publish_fixture(tmp_path)
+    repo.update("workflows", workflow_id, {"smoke_job_id": "missing"}, "owner")
+
+    with pytest.raises(ValueError, match="当前匹配|smoke"):
+        registry.publish("owner", workflow_id, confirmed=True)
+
+
+def test_registry_publishes_real_workflow_with_current_accepted_smoke_fixture(tmp_path):
+    _, registry, workflow_id, _ = _real_publish_fixture(tmp_path)
+
+    published = registry.publish("owner", workflow_id, confirmed=True)
+
+    assert published["state"] == "published"
+    assert published["active"] is True
 
 
 def test_workflow_owner_key_version_is_database_unique(tmp_path):

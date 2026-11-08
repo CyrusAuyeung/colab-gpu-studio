@@ -194,6 +194,7 @@ def test_accept_smoke_uses_server_job_and_verified_output(monkeypatch, tmp_path)
             "output_asset_ids": [asset["id"]],
             "requested_spec": {"key": {"variant": "GPU", "accelerator": "T4", "shape": "STANDARD"}},
             "gpu_diagnostics": {"device_name": "Tesla T4", "cuda_available": True},
+            "smoke_compatibility_signature": review_routes._smoke_compatibility_signature(workflow['id'], workflow, model['revision']),
             "snapshot": {"workflow_smoke": True},
         },
         OWNER["id"],

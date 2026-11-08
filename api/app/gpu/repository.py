@@ -207,6 +207,10 @@ def retarget_handle(handle, job_id):
 
 
 class Repository:
+    _CLEANUP_CLAIM_TTL_SECONDS = 300.0
+    _CLEANUP_RETRY_BASE_SECONDS = 2.0
+    _CLEANUP_RETRY_MAX_SECONDS = 300.0
+
     def __init__(self, store: Store):
         self.store = store
         ensure_schema(store)
@@ -544,13 +548,52 @@ class Repository:
             return True
 
     def handoff_lease(self, owner_id, job_id, next_job_id, lease_id, now):
+        """Transfer a lease under the same admission fence as allocation/bind."""
+        with self.store.admission_lock(timeout=1.0) as acquired:
+            if not acquired:
+                return False
+            return self._handoff_lease_locked(owner_id, job_id, next_job_id, lease_id, now)
+
+    def _handoff_lease_locked(self, owner_id, job_id, next_job_id, lease_id, now):
         """Finish old job and transfer exclusive lease ownership in one DB transaction."""
         with self.store.db_lock(), self.store.Session.begin() as session:
             job=session.get(GpuJobRow,job_id)
             following=session.get(GpuJobRow,next_job_id)
             lease=session.get(GpuLeaseRow,lease_id)
-            if not all(row is not None and row.owner_id==owner_id for row in (job,following,lease)):
-                raise ValueError('lease handoff ownership mismatch')
+            def association(row, key):
+                data_value = (row.data or {}).get(key)
+                typed_value = getattr(row, key, None)
+                if data_value not in (None, '') and typed_value not in (None, '') and data_value != typed_value:
+                    return False, None
+                return True, data_value if data_value not in (None, '') else typed_value
+
+            valid = True
+            associations = {}
+            for name, row in (("job", job), ("following", following), ("lease", lease)):
+                for key in ("account_id", "instance_id"):
+                    ok, value = association(row, key) if row is not None else (False, None)
+                    valid = valid and ok
+                    associations[f"{name}_{key}"] = value
+            instance_id = associations.get('job_instance_id') or associations.get('lease_instance_id')
+            instance = session.get(GpuInstanceRow, instance_id) if instance_id else None
+            if instance is not None:
+                for key in ("account_id", "current_job_id"):
+                    ok, value = association(instance, key)
+                    valid = valid and ok
+                    associations[f"instance_{key}"] = value
+            if not valid or not all(row is not None and row.owner_id==owner_id for row in (job,following,lease)):
+                raise ValueError('lease handoff association conflict')
+            if instance_id and (instance is None or instance.owner_id != owner_id):
+                raise ValueError('lease handoff instance ownership mismatch')
+            if associations.get('job_instance_id') not in {None, instance_id} or associations.get('lease_instance_id') not in {None, instance_id}:
+                raise ValueError('lease handoff instance mismatch')
+            lease_account = associations.get('lease_account_id')
+            if associations.get('job_account_id') not in {None, lease_account} or associations.get('following_account_id') not in {None, lease_account}:
+                return False
+            if instance is not None and (not associations.get('instance_account_id') or lease_account not in {None, associations['instance_account_id']}):
+                return False
+            if instance is not None and associations.get('instance_current_job_id') not in {None, job_id}:
+                return False
             if job.state!='cleaning_up' or following.state not in {'queued','validating','waiting_for_capacity'}:
                 return False
             if following.data.get('lease_id') not in {None,lease_id}:
@@ -560,31 +603,529 @@ class Repository:
                 return False
             if following.data.get('cancel_requested') or lease.data.get('owner_job_id')!=job_id:
                 return False
+            lease_account = (lease.data or {}).get('account_id') or lease.account_id
+            job_account = (job.data or {}).get('account_id') or job.account_id
+            following_account = (following.data or {}).get('account_id') or following.account_id
+            if any(value is not None and value != lease_account for value in (job_account, following_account)):
+                return False
+            instance_data = copy.deepcopy(instance.data or {}) if instance is not None else {}
+            account_id = instance_data.get('account_id') or (instance.account_id if instance is not None else None)
+            if instance is not None:
+                lease_account = (lease.data or {}).get('account_id') or lease.account_id
+                job_account = (job.data or {}).get('account_id') or job.account_id
+                following_account = (following.data or {}).get('account_id') or following.account_id
+                if not account_id or any(value not in {None, account_id} for value in (lease_account, job_account, following_account)):
+                    return False
+                if instance.current_job_id not in {None, job_id}:
+                    return False
+                if instance.state in {'deleted', 'unknown', 'releasing', 'cleanup_pending', 'quarantined'}:
+                    return False
             if (job.data.get('compatibility_signature')!=following.data.get('compatibility_signature')
                     or not job.data.get('compatibility_signature')
                     or lease.state not in {'active','busy'}
                     or now>=float(lease.data.get('deadline_epoch') or 0)):
                 return False
-            job.data={**job.data,'state':'completed','runtime_deleted':False,'stopped_at':now}
+            execution_id = job.data.get('execution_id')
+            execution=session.get(GpuExecutionRow, execution_id) if execution_id else None
+            next_execution_id = following.data.get('execution_id')
+            next_execution = session.get(GpuExecutionRow, next_execution_id) if next_execution_id else None
+            def execution_matches(execution, expected_job_id):
+                if execution is None or execution.owner_id != owner_id:
+                    return False
+                data = execution.data or {}
+                for key, expected in (("job_id", expected_job_id), ("lease_id", lease_id),
+                                      ("instance_id", instance_id), ("account_id", associations.get('instance_account_id') or lease_account)):
+                    json_value = data.get(key)
+                    typed_value = getattr(execution, key, None)
+                    if json_value not in (None, '') and typed_value not in (None, '') and json_value != typed_value:
+                        return False
+                    value = json_value if json_value not in (None, '') else typed_value
+                    if value not in (None, '') and value != expected:
+                        return False
+                return True
+
+            if execution is not None and not execution_matches(execution, job_id):
+                return False
+            if next_execution is not None and not execution_matches(next_execution, next_job_id):
+                return False
+            job.data={**job.data,'state':'completed','runtime_deleted':False,'stopped_at':now,
+                      **({'instance_id':instance.id,'account_id':account_id} if instance is not None else {})}
             job.state='completed'
+            if instance is not None:
+                job.instance_id = instance.id
+                job.account_id = account_id
             following.data={**following.data,'lease_id':lease_id,
-                            'deadline_epoch':lease.data['deadline_epoch']}
+                            'deadline_epoch':lease.data['deadline_epoch'],
+                            **({'instance_id':instance.id,'account_id':account_id} if instance is not None else {})}
+            if instance is not None:
+                following.instance_id = instance.id
+                following.account_id = account_id
             handle=lease.data.get('handle')
             # Handle ownership must follow the lease owner for every provider (real ones verify it).
             lease.data={**lease.data,'owner_job_id':next_job_id,'current_job_id':next_job_id,
                         'last_active_at':now,'state':'active',
+                        **({'instance_id':instance.id,'account_id':account_id} if instance is not None else {}),
                         **({'handle':retarget_handle(handle,next_job_id)} if isinstance(handle,dict) else {})}
             lease.state='active'
-            execution=session.get(GpuExecutionRow,job.data.get('execution_id'))
+            if instance is not None:
+                lease.instance_id = instance.id
+                lease.account_id = account_id
+                instance_data.update(current_job_id=next_job_id, instance_id=instance.id, account_id=account_id,
+                                     lease_id=lease_id, last_seen_at=now, runtime_deleted=False, state='allocating')
+                instance.data = instance_data
+                instance.current_job_id = next_job_id
+                instance.account_id = account_id
+                instance.state = 'allocating'
+            execution_id = job.data.get('execution_id')
+            execution=session.get(GpuExecutionRow, execution_id) if execution_id else None
             if execution is not None:
                 execution.state='completed'
-                execution.data={**execution.data,'state':'completed','finished_at':now}
+                execution.data={**execution.data,'state':'completed','job_id':job_id,'lease_id':lease_id,
+                                'finished_at':now,
+                                **({'instance_id':instance.id,'account_id':account_id} if instance is not None else {})}
+                if instance is not None:
+                    execution.instance_id=instance.id
+                    execution.account_id=account_id
+                execution.updated_at=utcnow()
+                execution.version += 1
+            next_execution_id = following.data.get('execution_id')
+            next_execution = session.get(GpuExecutionRow, next_execution_id) if next_execution_id else None
+            if next_execution is not None:
+                next_execution.data={**next_execution.data,'job_id':next_job_id,'lease_id':lease_id,
+                                     **({'instance_id':instance.id,'account_id':account_id} if instance is not None else {})}
+                if instance is not None:
+                    next_execution.instance_id=instance.id
+                    next_execution.account_id=account_id
+                next_execution.updated_at=utcnow()
+                next_execution.version += 1
             for row in (job,following,lease):
                 row.version+=1
                 row.updated_at=utcnow()
+            if instance is not None:
+                instance.version += 1
+                instance.updated_at=utcnow()
             if job.data.get('batch_id'):
                 self._refresh_batch(session,job.data['batch_id'],owner_id)
             return True
+
+    @staticmethod
+    def _cleanup_blocking(state):
+        return state in {'creating', 'active', 'busy', 'idle', 'cleanup_pending', 'quarantined', 'releasing', 'deleting'}
+
+    @classmethod
+    def _claim_is_live(cls, data, now):
+        claimed_at = data.get('cleanup_claimed_at')
+        try:
+            return claimed_at is not None and float(now) - float(claimed_at) < cls._CLEANUP_CLAIM_TTL_SECONDS
+        except (TypeError, ValueError):
+            return True
+
+    def claim_orphan_lease(self, owner_id, lease_id, instance_id, token, now):
+        """Atomically fence an orphan lease and its instance before provider I/O.
+
+        Admission is intentionally used here instead of dispatch: allocation and
+        lease binding take the same short admission lock, while the provider call
+        happens after this transaction commits.
+        """
+        with self.store.admission_lock(timeout=1.0) as acquired:
+            if not acquired:
+                return None
+            with self.store.db_lock(), self.store.Session.begin() as session:
+                lease = session.scalar(select(GpuLeaseRow).where(GpuLeaseRow.id == lease_id, GpuLeaseRow.owner_id == owner_id))
+                lease_instance_json = (lease.data or {}).get('instance_id') if lease is not None else None
+                lease_instance_typed = lease.instance_id if lease is not None else None
+                if (lease_instance_json not in (None, '') and lease_instance_typed not in (None, '')
+                        and lease_instance_json != lease_instance_typed):
+                    return None
+                lease_instance_id = lease_instance_json or lease_instance_typed
+                if lease is None or lease.state == 'deleted' or lease_instance_id != instance_id:
+                    return None
+                lease_data = lease.data or {}
+                if lease_data.get('cleanup_claim_token') not in {None, token} and self._claim_is_live(lease_data, now):
+                    return None
+                others = session.scalars(select(GpuLeaseRow).where(GpuLeaseRow.owner_id == owner_id)).all()
+                if any(
+                    row.id != lease_id
+                    and ((row.data or {}).get('instance_id') or row.instance_id) == instance_id
+                    and self._cleanup_blocking(row.state)
+                    for row in others
+                ):
+                    return None
+                instance = session.scalar(select(GpuInstanceRow).where(
+                    GpuInstanceRow.id == instance_id, GpuInstanceRow.owner_id == owner_id
+                ))
+                if instance is None:
+                    return None
+                instance_data = copy.deepcopy(instance.data or {})
+                instance_account_json = instance_data.get('account_id')
+                instance_account_typed = instance.account_id
+                lease_account_json = lease_data.get('account_id')
+                lease_account_typed = lease.account_id
+                if (instance_account_json in (None, '') or instance_account_typed in (None, '')
+                        or lease_account_json in (None, '') or lease_account_typed in (None, '')
+                        or instance_account_json != instance_account_typed
+                        or lease_account_json != lease_account_typed
+                        or lease_account_json != instance_account_json):
+                    return None
+                current_job = instance_data.get('current_job_id') or instance.current_job_id
+                if current_job or instance.state in {'allocating', 'ready', 'busy', 'retained_idle', 'deleted', 'unknown'}:
+                    return None
+                if instance_data.get('cleanup_claim_token') not in {None, token} and self._claim_is_live(instance_data, now):
+                    return None
+                instance_data.update(
+                    cleanup_claim_token=token,
+                    cleanup_claimed_at=now,
+                    runtime_deleted=False,
+                )
+                instance.state = 'cleanup_pending'
+                instance.version += 1
+                instance.updated_at = utcnow()
+                instance.data = instance_data
+                lease_data = copy.deepcopy(lease.data or {})
+                lease_data.update(cleanup_claim_token=token, cleanup_claimed_at=now, state='deleting')
+                lease.data = lease_data
+                lease.state = 'deleting'
+                lease.version += 1
+                lease.updated_at = utcnow()
+                session.flush()
+                return self._row(lease), self._row(instance)
+
+    def finish_orphan_lease(self, owner_id, lease_id, instance_id, token, now, *, confirmed, error=None, attempts=0):
+        """Commit or release a previously fenced orphan cleanup claim."""
+        with self.store.admission_lock(timeout=1.0) as acquired:
+            if not acquired:
+                return False
+            with self.store.db_lock(), self.store.Session.begin() as session:
+                lease = session.scalar(select(GpuLeaseRow).where(GpuLeaseRow.id == lease_id, GpuLeaseRow.owner_id == owner_id))
+                lease_instance_id = (lease.data or {}).get('instance_id') if lease is not None else None
+                lease_instance_id = lease_instance_id or (lease.instance_id if lease is not None else None)
+                if lease is None or lease_instance_id != instance_id:
+                    return False
+                data = copy.deepcopy(lease.data or {})
+                if data.get('cleanup_claim_token') != token or lease.state != 'deleting':
+                    return False
+                if confirmed:
+                    others = session.scalars(select(GpuLeaseRow).where(GpuLeaseRow.owner_id == owner_id)).all()
+                    if any(
+                        row.id != lease_id
+                        and ((row.data or {}).get('instance_id') or row.instance_id) == instance_id
+                        and self._cleanup_blocking(row.state)
+                        for row in others
+                    ):
+                        return False
+                    data.update(
+                        state='deleted', last_seen=now, cleanup_claim_token=None,
+                        remote_deleted=True, remote_deleted_at=now,
+                        remote_delete_source='orphan_cleanup_provider_confirmation',
+                    )
+                    lease.state = 'deleted'
+                else:
+                    if isinstance(error, dict):
+                        try:
+                            delay = max(0.0, float(error.get("retry_after")))
+                        except (TypeError, ValueError):
+                            delay = min(
+                                self._CLEANUP_RETRY_MAX_SECONDS,
+                                self._CLEANUP_RETRY_BASE_SECONDS * (2 ** max(0, attempts - 1)),
+                            )
+                        last_error = error.get("message") or error.get("error") or str(error)
+                    else:
+                        delay = min(
+                            self._CLEANUP_RETRY_MAX_SECONDS,
+                            self._CLEANUP_RETRY_BASE_SECONDS * (2 ** max(0, attempts - 1)),
+                        )
+                        last_error = error or "delete not confirmed"
+                    data.update(
+                        state="cleanup_pending", delete_attempts=attempts,
+                        cleanup_next_epoch=now + delay, last_error=last_error,
+                        last_seen=now, cleanup_claim_token=None,
+                    )
+                    lease.state = "cleanup_pending"
+                    instance = session.scalar(select(GpuInstanceRow).where(
+                        GpuInstanceRow.id == instance_id, GpuInstanceRow.owner_id == owner_id
+                    ))
+                    if instance is not None:
+                        instance_data = copy.deepcopy(instance.data or {})
+                        if instance_data.get("cleanup_claim_token") == token:
+                            instance_data.update(cleanup_claim_token=None, cleanup_claimed_at=None)
+                            instance.data = instance_data
+                            instance.version += 1
+                            instance.updated_at = utcnow()
+                lease.data = data
+                lease.version += 1
+                lease.updated_at = utcnow()
+                session.flush()
+                return True
+
+    def claim_orphan_instance(self, owner_id, instance_id, lease_id, token, now):
+        """Fence a historical instance before checking a deleted lease remotely.
+
+        Old handoff rows may have a deleted lease without the provenance marker
+        written by newer cleanup code.  The short admission transaction only
+        claims a fully owned, terminal, unambiguous instance; provider I/O is
+        deliberately performed after it commits.
+        """
+        with self.store.admission_lock(timeout=1.0) as acquired:
+            if not acquired:
+                return None
+            with self.store.db_lock(), self.store.Session.begin() as session:
+                instance = session.scalar(select(GpuInstanceRow).where(
+                    GpuInstanceRow.id == instance_id, GpuInstanceRow.owner_id == owner_id
+                ))
+                lease = session.scalar(select(GpuLeaseRow).where(
+                    GpuLeaseRow.id == lease_id, GpuLeaseRow.owner_id == owner_id
+                ))
+                if instance is None or lease is None or instance.state not in {"releasing", "cleanup_pending"}:
+                    return None
+                if lease.state != "deleted":
+                    return None
+                instance_data = copy.deepcopy(instance.data or {})
+                lease_data = copy.deepcopy(lease.data or {})
+
+                def identity(row, data, key):
+                    json_value = data.get(key)
+                    typed_value = getattr(row, key, None)
+                    if json_value not in (None, "") and typed_value not in (None, "") and json_value != typed_value:
+                        return None, False
+                    return (json_value if json_value not in (None, "") else typed_value), True
+
+                instance_identity = {}
+                lease_identity = {}
+                for key in ("account_id", "instance_id", "current_job_id"):
+                    value, valid = identity(instance, instance_data, key)
+                    if not valid:
+                        return None
+                    instance_identity[key] = value
+                for key in ("account_id", "instance_id"):
+                    value, valid = identity(lease, lease_data, key)
+                    if not valid:
+                        return None
+                    lease_identity[key] = value
+                if (
+                    not instance_identity["account_id"]
+                    or instance_identity["account_id"] != lease_identity["account_id"]
+                    or instance_identity["instance_id"] not in (None, instance_id)
+                    or lease_data.get("provider") not in {"mock", "colab"}
+                    or instance_data.get("provider") not in {None, lease_data.get("provider")}
+                    or not lease_data.get("runtime_id")
+                    or not lease_data.get("request_id")
+                ):
+                    return None
+                if lease_data.get("remote_delete_source") not in (None, ""):
+                    return None
+                for row_data in (instance_data, lease_data):
+                    retry_at = row_data.get("cleanup_next_epoch")
+                    if retry_at is not None:
+                        try:
+                            if float(now) < float(retry_at):
+                                return None
+                        except (TypeError, ValueError):
+                            return None
+                current_job_id = instance_identity["current_job_id"]
+                owner_job_id = lease_data.get("owner_job_id")
+                if not owner_job_id:
+                    return None
+                jobs = session.scalars(select(GpuJobRow).where(GpuJobRow.owner_id == owner_id)).all()
+                by_id = {row.id: row for row in jobs}
+                related = [row for row in jobs if row.id in {current_job_id, owner_job_id}
+                           or ((row.data or {}).get("instance_id") or row.instance_id) == instance_id]
+                if any(row.state not in {"completed", "failed", "cancelled"} for row in related):
+                    return None
+                provider = lease_data.get("provider")
+                owner_job = by_id.get(owner_job_id)
+                if owner_job is None or owner_job.state not in {"completed", "failed", "cancelled"}:
+                    return None
+                lease_instance_id = lease_identity["instance_id"]
+                owner_job_data = owner_job.data or {}
+                owner_job_instance = owner_job_data.get("instance_id") or owner_job.instance_id
+                if lease_instance_id not in (None, instance_id):
+                    # A completed handoff may have rebound this lease to the
+                    # successor instance.  Accept it only when the lease and
+                    # its current owner job agree exactly on that successor.
+                    if owner_job_instance != lease_instance_id or lease_instance_id == instance_id:
+                        return None
+                for row in related:
+                    row_data = row.data or {}
+                    row_account = row_data.get("account_id") or row.account_id
+                    row_instance = row_data.get("instance_id") or row.instance_id
+                    row_provider = row_data.get("provider") or (row_data.get("execution_policy") or {}).get("provider")
+                    allowed_instances = {None, instance_id}
+                    if row.id == owner_job_id and lease_instance_id not in (None, instance_id):
+                        allowed_instances.add(lease_instance_id)
+                    if (
+                        row_account not in (None, instance_identity["account_id"])
+                        or row_instance not in allowed_instances
+                        or row_provider not in (None, provider)
+                    ):
+                        return None
+                if current_job_id and current_job_id not in by_id:
+                    return None
+                leases = session.scalars(select(GpuLeaseRow).where(GpuLeaseRow.owner_id == owner_id)).all()
+                runtime_id = lease_data.get("runtime_id")
+                if any(
+                    row.id != lease_id
+                    and row.state != "deleted"
+                    and (
+                        ((row.data or {}).get("instance_id") or row.instance_id) == instance_id
+                        or (row.data or {}).get("runtime_id") == runtime_id
+                    )
+                    for row in leases
+                ):
+                    return None
+                claimed = instance_data.get("cleanup_claim_token")
+                if claimed not in (None, token) and self._claim_is_live(instance_data, now):
+                    return None
+                instance_data.update(
+                    cleanup_claim_token=token,
+                    cleanup_claimed_at=now,
+                    cleanup_claim_lease_id=lease_id,
+                    cleanup_claim_instance_id=instance_id,
+                    cleanup_claim_current_job_id=current_job_id,
+                    runtime_deleted=False,
+                )
+                instance.state = "cleanup_pending"
+                instance.data = instance_data
+                instance.version += 1
+                instance.updated_at = utcnow()
+                lease_data.update(
+                    cleanup_claim_token=token,
+                    cleanup_claimed_at=now,
+                    cleanup_claim_lease_id=lease_id,
+                    cleanup_claim_instance_id=lease_identity["instance_id"],
+                    cleanup_claim_owner_job_id=owner_job_id,
+                    cleanup_claim_runtime_id=runtime_id,
+                )
+                lease.data = lease_data
+                lease.version += 1
+                lease.updated_at = utcnow()
+                session.flush()
+                return self._row(instance), self._row(lease)
+
+    def finish_orphan_instance(
+        self, owner_id, instance_id, lease_id, token, now, *, confirmed, error=None, expected_version=None,
+        expected_lease_version=None
+    ):
+        """Persist or release a fenced historical-instance reconciliation."""
+        with self.store.admission_lock(timeout=1.0) as acquired:
+            if not acquired:
+                return False
+            with self.store.db_lock(), self.store.Session.begin() as session:
+                instance = session.scalar(select(GpuInstanceRow).where(
+                    GpuInstanceRow.id == instance_id, GpuInstanceRow.owner_id == owner_id
+                ))
+                lease = session.scalar(select(GpuLeaseRow).where(
+                    GpuLeaseRow.id == lease_id, GpuLeaseRow.owner_id == owner_id
+                ))
+                if instance is None or lease is None or lease.state != "deleted":
+                    return False
+                if expected_lease_version is None or lease.version != expected_lease_version:
+                    return False
+                if expected_version is None or instance.version != expected_version or instance.state != "cleanup_pending":
+                    return False
+                data = copy.deepcopy(instance.data or {})
+                if (
+                    data.get("cleanup_claim_token") != token
+                    or data.get("cleanup_claim_lease_id") != lease_id
+                    or data.get("cleanup_claim_instance_id") != instance_id
+                ):
+                    return False
+                lease_data = copy.deepcopy(lease.data or {})
+                if (
+                    lease_data.get("cleanup_claim_token") != token
+                    or lease_data.get("cleanup_claim_lease_id") != lease_id
+                    or lease_data.get("cleanup_claim_owner_job_id") != lease_data.get("owner_job_id")
+                    or lease_data.get("cleanup_claim_runtime_id") != lease_data.get("runtime_id")
+                ):
+                    return False
+                lease_instance_json = lease_data.get("instance_id")
+                lease_instance_typed = lease.instance_id
+                if (
+                    lease_instance_json not in (None, "")
+                    and lease_instance_typed not in (None, "")
+                    and lease_instance_json != lease_instance_typed
+                ):
+                    return False
+                if (lease_instance_json or lease_instance_typed) != lease_data.get("cleanup_claim_instance_id"):
+                    return False
+                owner_job_id = lease_data.get("owner_job_id")
+                owner_job = session.scalar(select(GpuJobRow).where(
+                    GpuJobRow.id == owner_job_id, GpuJobRow.owner_id == owner_id
+                ))
+                if owner_job is None or owner_job.state not in {"completed", "failed", "cancelled"}:
+                    return False
+                claimed_current_job = data.get("cleanup_claim_current_job_id")
+                current_job_id = data.get("current_job_id")
+                if current_job_id != claimed_current_job:
+                    return False
+                if current_job_id:
+                    current_job = session.scalar(select(GpuJobRow).where(
+                        GpuJobRow.id == current_job_id, GpuJobRow.owner_id == owner_id
+                    ))
+                    if current_job is None or current_job.state not in {"completed", "failed", "cancelled"}:
+                        return False
+                if confirmed:
+                    leases = session.scalars(select(GpuLeaseRow).where(GpuLeaseRow.owner_id == owner_id)).all()
+                    runtime_id = lease_data.get("runtime_id")
+                    if any(
+                        row.id != lease_id
+                        and row.state != "deleted"
+                        and (
+                            ((row.data or {}).get("instance_id") or row.instance_id) == instance_id
+                            or (row.data or {}).get("runtime_id") == runtime_id
+                        )
+                        for row in leases
+                    ):
+                        return False
+                    data.update(
+                        current_job_id=None,
+                        runtime_deleted=True,
+                        remote_deleted=True,
+                        remote_deleted_at=now,
+                        remote_delete_source="orphan_reconciliation_provider_confirmation",
+                        retention_reserved=0.0,
+                        deleted_at=now,
+                        deletion_confirmed_at=now,
+                        last_seen_at=now,
+                        cleanup_claim_token=None,
+                        cleanup_claimed_at=None,
+                        cleanup_claim_lease_id=None,
+                        cleanup_claim_instance_id=None,
+                        cleanup_claim_current_job_id=None,
+                    )
+                    instance.state = "deleted"
+                    instance.current_job_id = None
+                else:
+                    data.update(
+                        cleanup_claim_token=None,
+                        cleanup_claimed_at=None,
+                        cleanup_next_epoch=now + self._CLEANUP_RETRY_BASE_SECONDS,
+                        last_error=error or "remote deletion not confirmed",
+                        last_seen_at=now,
+                        cleanup_claim_lease_id=None,
+                        cleanup_claim_instance_id=None,
+                        cleanup_claim_current_job_id=None,
+                    )
+                    instance.state = "cleanup_pending"
+                instance.data = data
+                instance.version += 1
+                instance.updated_at = utcnow()
+                lease_data.pop("cleanup_claim_token", None)
+                lease_data.pop("cleanup_claimed_at", None)
+                lease_data.pop("cleanup_claim_lease_id", None)
+                lease_data.pop("cleanup_claim_instance_id", None)
+                lease_data.pop("cleanup_claim_owner_job_id", None)
+                lease_data.pop("cleanup_claim_runtime_id", None)
+                if confirmed:
+                    lease_data.update(
+                        remote_deleted=True,
+                        remote_deleted_at=now,
+                        remote_delete_source="orphan_reconciliation_provider_confirmation",
+                    )
+                lease.data = lease_data
+                lease.version += 1
+                lease.updated_at = utcnow()
+                session.flush()
+                return True
 
     def record_usage_once(self, owner_id, payload):
         # Deterministic primary key provides DB-enforced dedupe across processes.
@@ -621,16 +1162,26 @@ class Repository:
                 raise ValueError('lease cleanup must be confirmed before retry')
             history=data.get('attempt_history') or []
             history.append({k:copy.deepcopy(v) for k,v in data.items() if k not in {'snapshot','request_body','attempt_history','attempt_retry_keys'}})
-            transient={'execution_id','lease_id','outputs','output_asset_ids','persisted_outputs','error_code','error_message',
+            transient={
+                'execution_id','lease_id','outputs','output_asset_ids','persisted_outputs','error_code','error_message',
                 'cancel_requested','requested_outcome','cleanup_final_state','cleanup_attempts','cleanup_next_epoch',
                 'upload_attempts','started_epoch','stopped_at','deadline_epoch','validated_epoch','budget_reserved',
                 'runtime_deleted','actual_units','prep_report','progress','awaiting_prep',
-                'stage','worker_timings','output_bytes','started_at','finished_at','poll_retry_count','poll_retry_at'}
+                'instance_completion_recorded','instance_id','instance_state','instance_bound','account_id',
+                'requested_instance_id',
+                'account_alias_snapshot','selection_reason','allocation_key','attempt_id','runtime_id','request_id',
+                'stage','worker_timings','output_bytes','started_at','finished_at','poll_retry_count','poll_retry_at',
+            }
             for k in transient:
                 data.pop(k,None)
-            data.update(state='queued',attempt_history=history,attempt_retry_keys=[*keys,key])
+            policy=data.get('execution_policy')
+            if isinstance(policy, Mapping) and ('instance_id' in policy or 'requested_instance_id' in policy):
+                data['execution_policy']={**policy,'instance_id':None,'requested_instance_id':None}
+            data.update(state='queued',attempt_history=history,attempt_retry_keys=[*keys,key],attempt_id=key)
             job.data=data
             job.state='queued'
+            job.instance_id = None
+            job.account_id = None
             job.version+=1
             job.updated_at=utcnow()
             session.add(GpuEventRow(id=str(uuid.uuid4()),owner_id=owner_id,project_id=job.project_id,state='queued',
@@ -647,19 +1198,55 @@ class Repository:
             lease=session.get(GpuLeaseRow,lease_id)
             if not job or not lease or lease.owner_id!=owner_id:
                 raise KeyError(job_id)
-            if job.data.get('execution_id'):
-                return self._row(job)
             if job.state!='loading':
                 raise ValueError('job is not ready to start')
+            lease_data = lease.data or {}
+            lease_owner_job = lease_data.get('owner_job_id')
+            if lease_owner_job is not None and lease_owner_job != job_id:
+                raise ValueError('lease does not belong to job')
+            if job.data.get('lease_id') not in {None, lease_id}:
+                raise ValueError('job lease identity mismatch')
+            if lease.state not in {'creating', 'active', 'busy'}:
+                raise ValueError('lease is not active')
+            job_account = job.data.get('account_id') or job.account_id
+            lease_account = lease_data.get('account_id') or lease.account_id
+            if job_account is not None and lease_account is not None and job_account != lease_account:
+                raise ValueError('lease account mismatch')
+            job_instance = job.data.get('instance_id') or job.instance_id
+            lease_instance = lease_data.get('instance_id') or lease.instance_id
+            if job_instance is not None and lease_instance is not None and job_instance != lease_instance:
+                raise ValueError('lease instance mismatch')
+            existing_execution_id = job.data.get('execution_id')
+            if existing_execution_id:
+                execution = session.get(GpuExecutionRow, existing_execution_id)
+                if execution is None or execution.owner_id != owner_id:
+                    raise ValueError('execution association mismatch')
+                expected = {'job_id': job_id, 'lease_id': lease_id,
+                            'instance_id': job_instance or lease_instance,
+                            'account_id': job_account or lease_account}
+                for key, expected_value in expected.items():
+                    json_value = (execution.data or {}).get(key)
+                    typed_value = getattr(execution, key, None)
+                    if json_value not in (None, '') and typed_value not in (None, '') and json_value != typed_value:
+                        raise ValueError('execution association conflict')
+                    value = json_value if json_value not in (None, '') else typed_value
+                    if expected_value not in (None, '') and value != expected_value:
+                        raise ValueError('execution association mismatch')
+                return self._row(job)
             execution_id=str(uuid.uuid4())
             attempt=int(job.data.get('attempt_number') or 0)+1
             job.data={**job.data,'execution_id':execution_id,'attempt_number':attempt}
             job.version+=1
             job.updated_at=utcnow()
+            lease_data = lease.data or {}
+            instance_id = job.data.get('instance_id') or lease_data.get('instance_id') or lease.instance_id
+            account_id = job.data.get('account_id') or lease_data.get('account_id') or lease.account_id
             session.add(GpuExecutionRow(id=execution_id,owner_id=owner_id,project_id=job.project_id,
+                account_id=account_id,instance_id=instance_id,
                 state='starting',version=0,created_at=utcnow(),updated_at=utcnow(),
                 data={'job_id':job_id,'lease_id':lease_id,'attempt':attempt,
-                      'worker_session_id':lease_id,'started_at':now,'state':'starting'}))
+                      'worker_session_id':lease_id,'started_at':now,'state':'starting',
+                      'instance_id':instance_id,'account_id':account_id}))
             session.flush()
             return self._row(job)
 

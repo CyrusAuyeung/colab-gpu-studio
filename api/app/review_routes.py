@@ -275,6 +275,192 @@ def _budget_check(st, owner: str, cfg: GpuConfig, units: float) -> None:
         raise APIError("GPU_BUDGET_EXCEEDED", "真实冒烟预算超过账户日/月上限")
 
 
+def _runtime_cap(row: Mapping, cfg: GpuConfig) -> int:
+    """Return the server-enforced runtime ceiling for this workflow."""
+    declared = (row.get("manifest") or {}).get("max_runtime_minutes", 5)
+    if isinstance(declared, bool) or not isinstance(declared, int) or declared < 1:
+        raise APIError("WORKFLOW_INVALID", "manifest.max_runtime_minutes必须是正整数")
+    return min(declared, cfg.max_runtime_minutes)
+
+
+def _smoke_compatibility_signature(
+    workflow_id: str,
+    row: Mapping,
+    model_revision: str | None,
+    *,
+    snapshot_parts: Mapping | None = None,
+) -> str:
+    """Fingerprint the reviewed artifact, not the user-supplied smoke params.
+
+    The workflow id is deliberately only one part of this identity.  A draft
+    can be replaced in place during the review flow, and old jobs may not have
+    been stamped with this field at all, so the template digest, model
+    revision, dependency pin and exact weight list are retained as well.
+    """
+    manifest = row.get("manifest")
+    if not isinstance(manifest, Mapping):
+        raise APIError("WORKFLOW_INVALID", "工作流artifact缺少manifest")
+    dependencies = manifest.get("dependencies")
+    if not isinstance(dependencies, Mapping):
+        raise APIError("WORKFLOW_INVALID", "manifest.dependencies缺失")
+    weights = dependencies.get("weight_files")
+    if snapshot_parts and isinstance(snapshot_parts.get("weight_files"), list):
+        weights = snapshot_parts["weight_files"]
+    template_hash = row.get("sha256")
+    if not isinstance(template_hash, str) or not template_hash:
+        template_hash = _workflow_digest(dict(row))
+    identity = {
+        "workflow_id": workflow_id,
+        "workflow_key": row.get("workflow_key"),
+        "workflow_version": str(row.get("workflow_version")),
+        "model_id": row.get("model_id"),
+        "template_sha256": template_hash,
+        "model_revision": model_revision,
+        "comfyui_commit": dependencies.get("comfyui_commit"),
+        "custom_nodes": copy.deepcopy(dependencies.get("custom_nodes") or []),
+        "weight_files": copy.deepcopy(weights),
+    }
+    return digest(identity)
+
+
+def _job_snapshot(job: Mapping) -> Mapping:
+    """Return a safe immutable snapshot view for old and malformed jobs."""
+    snapshot = job.get("snapshot")
+    return snapshot if isinstance(snapshot, Mapping) else {}
+
+
+def _job_smoke_signature(job: Mapping) -> str | None:
+    """Read an explicit fingerprint, or reconstruct a complete legacy one."""
+    direct = job.get("smoke_compatibility_signature")
+    if isinstance(direct, str) and direct:
+        return direct
+    snapshot = _job_snapshot(job)
+    stamped = snapshot.get("smoke_compatibility_signature")
+    if isinstance(stamped, str) and stamped:
+        return stamped
+    return None
+
+
+def _legacy_smoke_identity(job: Mapping) -> dict | None:
+    """Extract every immutable identity field from a pre-fingerprint job."""
+    snapshot = _job_snapshot(job)
+    manifest = snapshot.get("manifest")
+    manifest = manifest if isinstance(manifest, Mapping) else {}
+    dependencies = snapshot.get("dependency_lock")
+    dependencies = dependencies if isinstance(dependencies, Mapping) else {}
+    manifest_dependencies = manifest.get("dependencies")
+    manifest_dependencies = manifest_dependencies if isinstance(manifest_dependencies, Mapping) else {}
+
+    def first(*values):
+        for value in values:
+            if value is not None:
+                return copy.deepcopy(value)
+        return None
+
+    identity = {
+        "workflow_id": first(job.get("target_workflow_id"), snapshot.get("target_workflow_id")),
+        "workflow_key": first(job.get("workflow_key"), snapshot.get("workflow_key")),
+        "workflow_version": first(job.get("workflow_version"), snapshot.get("workflow_version")),
+        "model_id": first(job.get("target_model_id"), job.get("model_id"), snapshot.get("model_id")),
+        "template_sha256": first(
+            snapshot.get("workflow_sha256"), job.get("workflow_sha256"), snapshot.get("sha256")
+        ),
+        "model_revision": first(snapshot.get("model_revision"), job.get("model_revision")),
+        "comfyui_commit": first(
+            dependencies.get("comfyui_commit"),
+            snapshot.get("comfyui_commit"),
+            manifest.get("comfyui_commit"),
+            manifest_dependencies.get("comfyui_commit"),
+        ),
+        "custom_nodes": first(
+            snapshot.get("custom_nodes"),
+            manifest.get("custom_nodes"),
+            manifest_dependencies.get("custom_nodes"),
+        ),
+        "weight_files": first(
+            dependencies.get("weight_files"),
+            snapshot.get("weight_files"),
+            manifest.get("weight_files"),
+            manifest_dependencies.get("weight_files"),
+        ),
+    }
+    if any(value is None for value in identity.values()):
+        return None
+    return identity
+
+
+def _job_matches_smoke(job: Mapping, workflow_id: str, row: Mapping, model: Mapping, current: str) -> bool:
+    """Match current reviewed identity; an explicit mismatch is terminal."""
+    if not isinstance(job, Mapping) or not isinstance(row, Mapping) or not isinstance(model, Mapping):
+        return False
+    if job.get("target_workflow_id") != workflow_id:
+        return False
+    if (job.get("target_model_id") or job.get("model_id")) != row.get("model_id"):
+        return False
+    if job.get("workflow_key") != row.get("workflow_key"):
+        return False
+    if str(job.get("workflow_version")) != str(row.get("workflow_version")):
+        return False
+
+    # A present fingerprint is authoritative.  Never let a stale explicit
+    # fingerprint fall through to weaker legacy evidence.
+    if job.get("smoke_compatibility_signature") is not None:
+        return job.get("smoke_compatibility_signature") == current
+    snapshot = _job_snapshot(job)
+    if snapshot.get("smoke_compatibility_signature") is not None:
+        return snapshot.get("smoke_compatibility_signature") == current
+
+    # Legacy jobs remain reusable only when all immutable fields are present
+    # and equal.  In particular, custom_nodes cannot be omitted from the
+    # comparison or replaced by a truthiness-based default.
+    legacy = _legacy_smoke_identity(job)
+    if legacy is None:
+        return False
+    manifest = row.get("manifest")
+    if not isinstance(manifest, Mapping):
+        return False
+    dependencies = manifest.get("dependencies")
+    if not isinstance(dependencies, Mapping):
+        return False
+    current_identity = {
+        "workflow_id": workflow_id,
+        "workflow_key": row.get("workflow_key"),
+        "workflow_version": row.get("workflow_version"),
+        "model_id": row.get("model_id"),
+        "template_sha256": row.get("sha256") or _workflow_digest(dict(row)),
+        "model_revision": model.get("revision"),
+        "comfyui_commit": dependencies.get("comfyui_commit"),
+        "custom_nodes": copy.deepcopy(dependencies.get("custom_nodes")),
+        "weight_files": copy.deepcopy(dependencies.get("weight_files")),
+    }
+    return legacy == current_identity
+
+
+def _reusable_smoke_job(repo: Repository, owner: str, workflow_id: str, row: Mapping, model: Mapping, signature: str):
+    for job in repo.list("jobs", owner):
+        if job.get("state") not in {"queued", "running", "completed"}:
+            continue
+        if job.get("smoke_accepted") is True:
+            continue
+        if _job_matches_smoke(job, workflow_id, row, model, signature):
+            return job
+    return None
+
+
+def _smoke_response(job: Mapping, request: Request, *, resumed: bool):
+    return ok(
+        {
+            "id": job["id"],
+            "job_id": job["id"],
+            "state": job["state"],
+            "estimated_units": job.get("estimated_units"),
+            "resumed": resumed,
+        },
+        request,
+        202,
+    )
+
+
 @router.post("/models/{model_id}/review")
 def review_model(
     model_id: str, body: dict, request: Request, user=Depends(current_user), st=Depends(get_store)
@@ -452,11 +638,8 @@ def real_smoke(
     chosen_spec = _eligible_spec(
         GoogleColabProvider(repo, user["id"], account_id=account_id).list_specs(), requested_key
     )
-    # 大模型要先下载权重，五分钟不够；由 manifest.max_runtime_minutes 声明，仍受全局上限约束。
-    declared = row["manifest"].get("max_runtime_minutes", 5)
-    if isinstance(declared, bool) or not isinstance(declared, int) or declared < 1:
-        raise APIError("WORKFLOW_INVALID", "manifest.max_runtime_minutes必须是正整数")
-    runtime = min(declared, cfg.max_runtime_minutes)
+    # 大模型要先下载权重；声明值仍受服务端全局上限约束。
+    runtime = _runtime_cap(row, cfg)
     estimated = runtime * cfg.unit_rate  # budget worst case
     picked = mode_param(row["manifest"])
     shown, rate = estimate_units(repo, user["id"], row["workflow_key"], row["manifest"], chosen_spec.get("key"), runtime,
@@ -495,6 +678,15 @@ def real_smoke(
     with st.dispatch_lock() as acquired:
         if not acquired:
             raise APIError("SCHEDULER_BUSY", "调度正在同步，请稍后用相同幂等键重试", 503, True)
+        compatibility = _smoke_compatibility_signature(
+            workflow_id,
+            row,
+            model.get("revision"),
+            snapshot_parts=snapshot_parts,
+        )
+        reusable = _reusable_smoke_job(repo, user["id"], workflow_id, row, model, compatibility)
+        if reusable:
+            return _smoke_response(reusable, request, resumed=True)
         _budget_check(st, user["id"], cfg, estimated)
         job, created = repo.create_job(user["id"], raw, key)
         if created:
@@ -522,6 +714,7 @@ def real_smoke(
                     "budget_units": estimated,
                     "workflow_smoke": True,
                     "system_smoke": False,
+                    "smoke_compatibility_signature": compatibility,
                 },
                 user["id"],
             )
@@ -531,16 +724,7 @@ def real_smoke(
                 "queued",
                 "已通过人工审查并排队真实模型冒烟；最长以 manifest 声明的分钟数为限，完成后立即释放GPU",
             )
-    return ok(
-        {
-            "id": job["id"],
-            "job_id": job["id"],
-            "state": job["state"],
-            "estimated_units": job.get("estimated_units"),
-        },
-        request,
-        202,
-    )
+    return _smoke_response(job, request, resumed=not created)
 
 
 @router.post("/workflows/{workflow_id}/prepare")
@@ -648,7 +832,7 @@ def accept_smoke(
     if row.get("review_approved") is not True:
         raise APIError("WORKFLOW_NOT_REVIEWED", "工作流尚未完成管理员审查")
     job = own(repo, "jobs", body["job_id"], user)
-    snapshot = job.get("snapshot") or {}
+    snapshot = _job_snapshot(job)
     if (
         job.get("state") != "completed"
         or job.get("provider") != "colab"
@@ -657,6 +841,9 @@ def accept_smoke(
         raise APIError("SMOKE_NOT_COMPLETE", "只能验收已完成的服务器真实工作流冒烟任务")
     if job.get("target_workflow_id") != workflow_id or job.get("target_model_id") != row.get("model_id"):
         raise APIError("SMOKE_TARGET_MISMATCH", "冒烟任务目标与当前工作流/模型不匹配")
+    current_signature = _smoke_compatibility_signature(workflow_id, row, model.get("revision"))
+    if not _job_matches_smoke(job, workflow_id, row, model, current_signature):
+        raise APIError("SMOKE_TARGET_MISMATCH", "冒烟任务证据与当前工作流artifact不匹配")
     output_ids = job.get("output_asset_ids")
     if not isinstance(output_ids, list) or not output_ids:
         raise APIError("SMOKE_OUTPUT_INVALID", "真实冒烟没有可验收输出")
@@ -684,6 +871,15 @@ def accept_smoke(
             "smoke_test_kind": "real",
             "smoke_job_id": job["id"],
         },
+        user["id"],
+    )
+    # Keep accepted jobs out of future resume scans while preserving the
+    # underlying scheduler state (completed).  Publishing remains a separate
+    # registry gate and is not performed here.
+    repo.update(
+        "jobs",
+        job["id"],
+        {"smoke_accepted": True, "acceptance_state": "accepted"},
         user["id"],
     )
     repo.update(
@@ -727,20 +923,74 @@ def workflow_activation(
             raise APIError("GOOGLE_NOT_CONNECTED", "所选Google账号尚未完成Colab授权", 409)
     row = own(repo, "workflows", workflow_id, user)
     model = next((item for item in repo.list("models", user["id"]) if item.get("model_id") == row.get("model_id")), None)
+    cfg = GpuConfig.from_env()
+    try:
+        runtime_cap = _runtime_cap(row, cfg)
+    except APIError as exc:
+        runtime_cap = None
+        # Keep activation read-only and useful for a malformed draft; the
+        # write endpoint will return the same validation error before charging.
+        runtime_error = exc.message
+    else:
+        runtime_error = None
+    current_signature = None
+    if model is not None:
+        try:
+            current_signature = _smoke_compatibility_signature(workflow_id, row, model.get("revision"))
+        except APIError:
+            current_signature = None
     jobs = [
         job
         for job in repo.list("jobs", user["id"])
-        if job.get("target_workflow_id") == workflow_id and (job.get("snapshot") or {}).get("workflow_smoke") is True
+        if _job_snapshot(job).get("workflow_smoke") is True
+        and model is not None
+        and current_signature is not None
+        and _job_matches_smoke(job, workflow_id, row, model, current_signature)
     ]
-    jobs.sort(key=lambda job: (job.get("created_at") or 0, str(job.get("id"))), reverse=True)
+
+    def job_priority(job):
+        accepted = (
+            job.get("state") == "completed"
+            and bool(job.get("smoke_accepted"))
+            and row.get("smoke_job_id") == job.get("id")
+            and row.get("smoke_test_kind") == "real"
+            and row.get("smoke_test_passed") is True
+        )
+        states = {"completed": 1, "running": 2, "queued": 3, "failed": 4, "cancelled": 5}
+        return 0 if accepted else states.get(job.get("state"), 6)
+
+    # Prefer a successful pending artifact over a newer failed retry.  The
+    # second stable sort keeps the newest job within the same lifecycle state.
+    jobs.sort(key=lambda job: (job.get("created_at") or "", str(job.get("id"))), reverse=True)
+    jobs.sort(key=job_priority)
     smoke = jobs[0] if jobs else None
     smoke_state = (smoke or {}).get("state")
-    smoke_done = bool(row.get("smoke_test_passed")) and row.get("smoke_test_kind") == "real"
     published = row.get("state") == "published"
     validated = row.get("state") in {"validated", "published"}
     model_reviewed = bool(model and model.get("review_approved") and model.get("license_accepted"))
     reviewed = bool(row.get("review_approved"))
-    cfg = GpuConfig.from_env()
+    smoke_completed = smoke_state == "completed"
+    smoke_accepted = bool(
+        smoke
+        and smoke_completed
+        and row.get("smoke_test_passed") is True
+        and row.get("smoke_test_kind") == "real"
+        and row.get("smoke_job_id") == smoke.get("id")
+        and (smoke.get("smoke_accepted") is True or row.get("smoke_job_id") == smoke.get("id"))
+    )
+    # The workflow flag is only meaningful when it points at this current,
+    # identity-matched completed job; an old flag cannot make activation done.
+    smoke_done = smoke_accepted
+    smoke_acceptance_state = None
+    if smoke is not None:
+        if smoke_accepted:
+            smoke_acceptance_state = "published" if published else "accepted"
+        elif smoke_completed:
+            smoke_acceptance_state = "pending"
+        elif smoke_state in {"queued", "running"}:
+            smoke_acceptance_state = "pending"
+        else:
+            smoke_acceptance_state = "failed"
     blockers = []
     if model is None:
         blockers.append("找不到该工作流绑定的模型记录")
@@ -750,6 +1000,8 @@ def workflow_activation(
         blockers.append("服务端未开启真实 GPU（GPU_REAL_ENABLED）")
     elif cfg.unit_rate is None or cfg.unit_rate <= 0:
         blockers.append("服务端未配置 GPU 计价费率")
+    if runtime_error:
+        blockers.append(runtime_error)
 
     steps = [
         {"key": "validate", "label": "校验模板", "done": validated},
@@ -757,9 +1009,9 @@ def workflow_activation(
         {"key": "workflow_review", "label": "锁定权重与节点", "done": reviewed},
         {
             "key": "real_smoke",
-            "label": "真实 GPU 冒烟（≤5 分钟）",
-            "done": smoke_done,
-            "running": bool(smoke_state and smoke_state not in {"completed", "failed", "cancelled"}),
+            "label": f"真实 GPU 冒烟（≤{runtime_cap or 5} 分钟）",
+            "done": smoke_done or smoke_completed,
+            "running": smoke_state in {"queued", "running"},
             "failed": smoke_state == "failed",
         },
         {"key": "accept_smoke", "label": "验收冒烟结果", "done": smoke_done},
@@ -797,13 +1049,15 @@ def workflow_activation(
                 "state": smoke_state,
                 "error_code": smoke.get("error_code"),
                 "error_message": smoke.get("error_message"),
+                "acceptance_state": smoke_acceptance_state,
+                "reusable": bool(smoke_state in {"queued", "running", "completed"} and not smoke_accepted),
             },
-            "smoke_job_completed": smoke_state == "completed",
+            "smoke_job_completed": smoke_completed,
             "smoke_kind": row.get("smoke_test_kind"),
             "real_enabled": bool(cfg.real_enabled),
-            "max_runtime_minutes": (row.get("manifest") or {}).get("max_runtime_minutes"),
+            "max_runtime_minutes": runtime_cap,
             "blockers": blockers,
-            "done": published and bool(row.get("active")),
+            "done": published and bool(row.get("active")) and smoke_done,
             "account_id": account_id,
         },
         request,

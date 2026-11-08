@@ -45,6 +45,16 @@ SENSITIVE_KEYS = frozenset(
         "cookie",
         "secret",
         "password",
+        "credential",
+        "credentials",
+        "api_key",
+        "apikey",
+        "client_secret",
+        "clientsecret",
+        "private_key",
+        "privatekey",
+        "secret_key",
+        "secretkey",
         "handle",
         "runtime_handle",
         "signed_url",
@@ -179,10 +189,9 @@ class WorkbenchService:
         source = self.repo.store if kind == "assets" and hasattr(self.repo, "store") else self.repo
         return list(source.list(kind, owner))
 
-    def _workflows(self, owner: str):
-        if self.registry is not None:
-            return [row for row in self.registry.workflows(owner) if row.get("state") == "published"]
-        return [row for row in self._rows("workflows", owner) if row.get("state") == "published"]
+    def _workflows(self, owner: str, *, include_drafts: bool = False):
+        rows = self.registry.workflows(owner) if self.registry is not None else self._rows("workflows", owner)
+        return [row for row in rows if include_drafts or row.get("state") == "published"]
 
     @staticmethod
     def _workflow_identity(payload: Mapping):
@@ -192,15 +201,15 @@ class WorkbenchService:
             raise WorkbenchError("VALIDATION_ERROR", "必须指定已发布工作流 key 和 version")
         return key, version
 
-    def _workflow(self, owner: str, payload: Mapping):
+    def _workflow(self, owner: str, payload: Mapping, *, include_drafts: bool = False):
         workflow_id = payload.get("workflow_id")
         if workflow_id:
-            for row in self._workflows(owner):
+            for row in self._workflows(owner, include_drafts=include_drafts):
                 if row.get("id") == workflow_id:
                     return row
             raise WorkbenchError("WORKFLOW_UNPUBLISHED", "工作流未发布或不属于当前用户", 409)
         key, version = self._workflow_identity(payload)
-        for row in self._workflows(owner):
+        for row in self._workflows(owner, include_drafts=include_drafts):
             if row.get("workflow_key") == key and row.get("workflow_version") == version:
                 return row
         raise WorkbenchError("WORKFLOW_UNPUBLISHED", "工作流未发布或不属于当前用户", 409)
@@ -217,7 +226,7 @@ class WorkbenchService:
         def scan(value):
             if isinstance(value, Mapping):
                 for key, item in value.items():
-                    if str(key).lower() in SENSITIVE_KEYS:
+                    if re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", str(key)).lower() in SENSITIVE_KEYS:
                         raise WorkbenchError("WORKBENCH_INPUT_FORBIDDEN", "工作台不接受任意代码、URL、节点或凭据", 422)
                     scan(item)
             elif isinstance(value, list):
@@ -249,19 +258,313 @@ class WorkbenchService:
     @classmethod
     def _safe_public_value(cls, value):
         """Copy public JSON while removing credential/URL-shaped fields."""
+        blocked = {
+            re.sub(r"[^a-z0-9]+", "_", re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", str(key)).lower()).strip("_")
+            for key in SENSITIVE_KEYS
+        }
         if isinstance(value, Mapping):
-            return {
-                str(key): cls._safe_public_value(item)
-                for key, item in value.items()
-                if str(key).lower() not in SENSITIVE_KEYS and "url" not in str(key).lower()
-            }
+            result = {}
+            for key, item in value.items():
+                normalized = re.sub(r"[^a-z0-9]+", "_", re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", str(key)).lower()).strip("_")
+                if normalized in blocked or "url" in normalized:
+                    continue
+                result[str(key)] = cls._safe_public_value(item)
+            return result
         if isinstance(value, list):
             return [cls._safe_public_value(item) for item in value]
         if isinstance(value, tuple):
             return [cls._safe_public_value(item) for item in value]
         if isinstance(value, str):
-            return re.sub(r"(?:https?|wss?)://[^\\s\\\"'<>]+", "[REDACTED_URL]", value)
+            return re.sub(r"(?:https?|wss?)://[^\s\"'<>]+", "[REDACTED_URL]", value)
         return copy.deepcopy(value)
+
+    @classmethod
+    def _safe_preview_graph(cls, value):
+        """Return graph metadata without turning preview into a runtime proxy.
+
+        Published graphs are still treated as untrusted presentation data at
+        this boundary.  Keep node/link structure useful to the viewer, while
+        dropping executable or credential-shaped fields.  In particular this
+        method intentionally does not reuse ``_safe_public_value`` because a
+        UI graph commonly has a legitimate ``nodes`` collection.
+        """
+        blocked = {
+            "authorization",
+            "cookie",
+            "password",
+            "secret",
+            "token",
+            "access_token",
+            "refresh_token",
+            "connection_token",
+            "connection_info",
+            "connectioninfo",
+            "connection_string",
+            "connectionstring",
+            "credential",
+            "credentials",
+            "api_key",
+            "apikey",
+            "client_secret",
+            "clientsecret",
+            "private_key",
+            "privatekey",
+            "secret_key",
+            "secretkey",
+            "runtime_handle",
+            "signed_url",
+            "python",
+            "shell",
+            "command",
+            "script",
+            "install",
+            "websocket",
+        }
+        if isinstance(value, Mapping):
+            blocked = {
+                re.sub(r"[^a-z0-9]+", "_", re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", str(key)).lower()).strip("_")
+                for key in blocked
+            }
+            result = {}
+            for key, item in value.items():
+                normalized = re.sub(r"[^a-z0-9]+", "_", re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", str(key)).lower()).strip("_")
+                if normalized in blocked or "url" in normalized:
+                    continue
+                result[str(key)] = cls._safe_preview_graph(item)
+            return result
+        if isinstance(value, list):
+            return [cls._safe_preview_graph(item) for item in value]
+        if isinstance(value, tuple):
+            return [cls._safe_preview_graph(item) for item in value]
+        if isinstance(value, str):
+            return re.sub(r"(?:https?|wss?)://[^\s\"'<>]+", "[REDACTED_URL]", value)
+        return copy.deepcopy(value)
+
+    @staticmethod
+    def _evidence_status(value):
+        """Map stored booleans to honest review evidence states.
+
+        ``None``/absent means that this offline snapshot has no evidence.  It
+        must not be rendered as a failed check or as a successful runtime
+        probe.  A stored ``False`` is kept distinct as an explicit
+        not-confirmed result.
+        """
+        if value is True:
+            return "confirmed"
+        if value is False:
+            return "not_confirmed"
+        return "not_detected"
+
+    @classmethod
+    def _public_weight_files(cls, manifest):
+        dependencies = manifest.get("dependencies") if isinstance(manifest, Mapping) else None
+        raw = manifest.get("weight_files") if isinstance(manifest, Mapping) else None
+        if not isinstance(raw, list) and isinstance(dependencies, Mapping):
+            raw = dependencies.get("weight_files")
+        if not isinstance(raw, list):
+            return []
+
+        result = []
+        for item in raw:
+            if not isinstance(item, Mapping):
+                continue
+            public = {}
+            for key in ("repo_id", "filename", "revision", "sha256", "target", "size"):
+                if item.get(key) is not None:
+                    public[key] = cls._safe_public_value(item[key])
+            metadata_complete = all(
+                isinstance(public.get(key), str) and bool(public[key])
+                for key in ("repo_id", "filename", "revision", "sha256", "target")
+            )
+            public["metadata"] = {
+                "status": "confirmed" if metadata_complete else "confirmed_missing",
+                "label": "已确认" if metadata_complete else "清单字段缺失",
+            }
+
+            verification = item.get("verification")
+            trusted_sources = {"prep_report", "runtime_worker", "worker", "cache_probe"}
+            trusted = (
+                isinstance(verification, Mapping)
+                and verification.get("verified") is True
+                and verification.get("source") in trusted_sources
+            )
+            explicit = verification.get("status") if isinstance(verification, Mapping) else None
+            if trusted and str(explicit).lower() in {"missing", "absent", "confirmed_missing"}:
+                availability_status = "confirmed_missing"
+            elif trusted and str(explicit).lower() in {"present", "available", "verified"}:
+                availability_status = "confirmed"
+            else:
+                # A manifest's self-asserted ``present``/``missing`` flag is
+                # not a cache probe.  Only a separately marked, trusted
+                # verification result may confirm runtime availability.
+                availability_status = "not_detected"
+            public["availability"] = {
+                "status": availability_status,
+                "label": {
+                    "confirmed": "已确认存在",
+                    "confirmed_missing": "确认缺失",
+                    "not_detected": "未检测",
+                }[availability_status],
+                "source": "stored_manifest" if availability_status == "not_detected" else "stored_evidence",
+            }
+            result.append(public)
+        return result
+
+    @classmethod
+    def _node_references(cls, graph):
+        if not isinstance(graph, Mapping):
+            return []
+        result = []
+        for node_id, node in graph.items():
+            if not isinstance(node, Mapping):
+                continue
+            class_type = node.get("class_type")
+            if not isinstance(class_type, str):
+                continue
+            result.append(
+                {
+                    "node_id": str(node_id),
+                    "class_type": class_type,
+                    "inputs": cls._safe_preview_graph(node.get("inputs", {})),
+                }
+            )
+        return result
+
+    @classmethod
+    def _review_evidence(cls, workflow, model, node_references, manifest, weight_files):
+        allowlist = manifest.get("node_allowlist") if isinstance(manifest, Mapping) else None
+        if not isinstance(allowlist, list):
+            dependencies = manifest.get("dependencies") if isinstance(manifest, Mapping) else None
+            allowlist = dependencies.get("node_allowlist") if isinstance(dependencies, Mapping) else None
+        classes = sorted({item["class_type"] for item in node_references})
+        node_reviewed = (
+            isinstance(allowlist, list)
+            and bool(classes)
+            and all(class_type in allowlist for class_type in classes)
+        )
+        if isinstance(allowlist, list) and classes and not node_reviewed:
+            node_status = "not_in_allowlist"
+        else:
+            node_status = "confirmed" if node_reviewed else "not_detected"
+        weight_statuses = [item["metadata"]["status"] for item in weight_files]
+        if not weight_files:
+            weight_status = "not_detected"
+        elif all(status == "confirmed" for status in weight_statuses):
+            weight_status = "confirmed"
+        else:
+            weight_status = "confirmed_missing"
+        model_review = {
+            "status": cls._evidence_status(model.get("review_approved") if isinstance(model, Mapping) else None),
+            "review_approved": model.get("review_approved") if isinstance(model, Mapping) else None,
+            "license_accepted": model.get("license_accepted") if isinstance(model, Mapping) else None,
+        }
+        return {
+            "workflow": {
+                "status": cls._evidence_status(workflow.get("review_approved")),
+                "review_approved": workflow.get("review_approved"),
+                "reviewed_by": cls._safe_public_value(workflow.get("reviewed_by"))
+                if workflow.get("reviewed_by") is not None
+                else None,
+                "reviewed_at": workflow.get("reviewed_at"),
+            },
+            "model": model_review,
+            "nodes": {
+                "status": node_status,
+                "classes": classes,
+                "allowlist": cls._safe_public_value(allowlist) if isinstance(allowlist, list) else [],
+            },
+            "weights": {"status": weight_status},
+            "smoke": {
+                "status": cls._evidence_status(workflow.get("smoke_test_passed")),
+                "passed": workflow.get("smoke_test_passed"),
+                "kind": cls._safe_public_value(workflow.get("smoke_test_kind")),
+            },
+        }
+
+    def get_reviewed_graph(self, owner, payload: Mapping):
+        """Read an owner-scoped graph without requiring a live/verified instance.
+
+        Published previews keep the review boundary; an explicit allow_draft
+        request exposes only the same sanitized graph as read-only presentation.
+        """
+        allow_draft = payload.get("allow_draft") is True
+        workflow = self._workflow(owner, payload, include_drafts=allow_draft)
+        if workflow.get("state") != "published" and not allow_draft:
+            raise WorkbenchError("WORKFLOW_UNPUBLISHED", "工作流未发布或不属于当前用户", 409)
+        graph = workflow.get("api_graph")
+        if not isinstance(graph, Mapping):
+            raise WorkbenchError("WORKFLOW_INVALID", "已发布工作流缺少受审查图", 409)
+
+        editable = workflow.get("editable_graph")
+        manifest = workflow.get("manifest") if isinstance(workflow.get("manifest"), Mapping) else {}
+        weight_files = self._public_weight_files(manifest)
+        node_references = self._node_references(graph)
+        models = []
+        model_row = None
+        for row in self._rows("models", owner):
+            if row.get("model_id") != workflow.get("model_id"):
+                continue
+            model_row = row
+            summary = {"model_id": row.get("model_id")}
+            for key in (
+                "name",
+                "display_name",
+                "description",
+                "enabled",
+                "is_mock",
+                "license_status",
+                "disabled_reason",
+                "revision",
+                "sha256",
+                "review_approved",
+                "license_accepted",
+            ):
+                if row.get(key) is not None:
+                    summary[key] = self._safe_public_value(row[key])
+            models.append(summary)
+
+        dependencies = manifest.get("dependencies") if isinstance(manifest, Mapping) else None
+        comfyui_commit = manifest.get("comfyui_commit")
+        if comfyui_commit is None and isinstance(dependencies, Mapping):
+            comfyui_commit = dependencies.get("comfyui_commit")
+        custom_nodes = manifest.get("custom_nodes")
+        if custom_nodes is None and isinstance(dependencies, Mapping):
+            custom_nodes = dependencies.get("custom_nodes")
+        manifest_evidence = {
+            "version": self._safe_public_value(manifest.get("version", manifest.get("manifest_version"))),
+            "comfyui_commit": self._safe_public_value(comfyui_commit),
+            "custom_nodes": self._safe_public_value(custom_nodes or []),
+            "node_allowlist": self._safe_public_value(manifest.get("node_allowlist", [])),
+            "weight_files": copy.deepcopy(weight_files),
+        }
+
+        return {
+            "workflow_key": workflow["workflow_key"],
+            "workflow_version": workflow["workflow_version"],
+            "model_id": workflow.get("model_id"),
+            "description": workflow.get("description"),
+            "reviewed": workflow.get("state") == "published",
+            "published": workflow.get("state") == "published",
+            "state": workflow.get("state"),
+            "ui_graph": self._safe_preview_graph(editable) if isinstance(editable, (Mapping, list)) else None,
+            "api_graph": self._safe_preview_graph(graph),
+            "parameters": self._public_parameters(workflow.get("manifest") or {}),
+            "models": models,
+            "manifest": manifest_evidence,
+            "weight_files": weight_files,
+            "node_references": node_references,
+            "review": self._review_evidence(workflow, model_row, node_references, manifest, weight_files),
+            "runtime": {
+                "mode": "offline",
+                "gpu_detection": {
+                    "status": "not_detected",
+                    "label": "未检测",
+                    "reason": "离线预览不启动实例、不执行节点，也不探测 GPU",
+                },
+                "native_comfy_ui": False,
+                "native_comfy_ui_label": "非原生 ComfyUI 在线 UI",
+            },
+        }
 
     @classmethod
     def _public_parameters(cls, manifest):
@@ -412,6 +715,8 @@ class WorkbenchService:
     def _operation(self, owner, instance, action, payload, key):
         if action not in WORKBENCH_ACTIONS:
             raise WorkbenchError("WORKBENCH_ACTION_FORBIDDEN", "工作台动作不在固定 allowlist", 403)
+        if action in WRITE_ACTIONS and not self._is_verified(instance):
+            raise WorkbenchError("COMFY_UNVERIFIED", "实例尚未通过服务端运行时验证", 503, True)
         if action in WRITE_ACTIONS:
             if not isinstance(key, str) or not key or len(key) > 200:
                 raise WorkbenchError("IDEMPOTENCY_REQUIRED", "写入工作台必须提供固定幂等键", 422)
@@ -455,18 +760,12 @@ class WorkbenchService:
         return {"workflows": self.describe(owner, instance)["allowed_workflows"], "mock": self._is_mock(instance)}
 
     def _action_get_reviewed_graph(self, owner, instance, payload):
-        self._mock_or_unverified(instance)
-        workflow = self._workflow(owner, payload)
-        graph = workflow.get("api_graph")
-        if not isinstance(graph, Mapping):
-            raise WorkbenchError("WORKFLOW_INVALID", "已发布工作流缺少受审查图", 409)
-        return {
-            "workflow_key": workflow["workflow_key"],
-            "workflow_version": workflow["workflow_version"],
-            "graph": copy.deepcopy(dict(graph)),
-            "reviewed": True,
-            "published": True,
-        }
+        # Graph reading is the one deliberately offline-safe workbench
+        # operation.  It must not be blocked by COMFY_UNVERIFIED or instance
+        # health; all mutating actions retain their existing gates.
+        result = self.get_reviewed_graph(owner, payload)
+        result["graph"] = copy.deepcopy(result["api_graph"])
+        return result
 
     def _action_set_reviewed_params(self, owner, instance, payload):
         self._mock_or_unverified(instance)
@@ -558,7 +857,7 @@ class WorkbenchService:
         for asset_id in job.get("output_asset_ids", []) if isinstance(job, Mapping) else []:
             for row in self._rows("assets", owner):
                 if row.get("id") == asset_id:
-                    assets.append({k: v for k, v in row.items() if str(k).lower() not in SENSITIVE_KEYS})
+                    assets.append(self._safe_public_value(row))
         return {"job_id": job.get("id"), "artifacts": assets, "mock": self._is_mock(instance)}
 
     def _action_stop_current_job(self, owner, instance, payload):

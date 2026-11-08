@@ -269,11 +269,34 @@ class Registry:
             if not license_ok:
                 raise ValueError("真实workflow必须有许可审查证据")
             if not (
-                row.get("smoke_test_passed")
+                row.get("smoke_test_passed") is True
                 and row.get("smoke_test_kind") == "real"
-                and row.get("review_approved")
+                and row.get("review_approved") is True
             ):
                 raise ValueError("真实workflow必须有审查批准和真实smoke证据")
+            smoke_job_id = row.get("smoke_job_id")
+            smoke_job = self.repo.get("jobs", smoke_job_id, owner_id) if smoke_job_id else None
+            if not isinstance(smoke_job, dict):
+                raise ValueError("真实workflow必须有当前匹配的真实smoke任务")
+            if (
+                smoke_job.get("state") != "completed"
+                or smoke_job.get("provider") != "colab"
+                or smoke_job.get("smoke_accepted") is not True
+                or smoke_job.get("acceptance_state") != "accepted"
+                or smoke_job.get("workflow_smoke") is not True
+            ):
+                raise ValueError("真实workflow必须有已完成且已验收的真实smoke任务")
+            # Import locally: review_routes imports application wiring that
+            # eventually reaches Registry, so a module-level import cycles.
+            from .. import review_routes
+
+            current_signature = review_routes._smoke_compatibility_signature(
+                id, row, model.get("revision")
+            )
+            if not review_routes._job_matches_smoke(
+                smoke_job, id, row, model, current_signature
+            ):
+                raise ValueError("真实smoke证据与当前workflow artifact不匹配")
             classes = {
                 node.get("class_type") for node in row.get("api_graph", {}).values() if isinstance(node, dict)
             }

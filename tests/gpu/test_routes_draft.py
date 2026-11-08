@@ -87,6 +87,30 @@ def test_duplicate_mobile_requests_snapshot_and_project_outputs(gpu_client):
     assert c.post("/api/gpu/jobs", json=changed, headers=headers).status_code == 409
 
 
+def test_job_detail_returns_persisted_timing_details_and_event_logs(gpu_client):
+    from app.gpu.repository import Repository
+
+    c, st, user, project, h = gpu_client
+    response = c.post(
+        "/api/gpu/jobs",
+        json=request_body(c, project),
+        headers={**h, "Idempotency-Key": "timing-detail"},
+    )
+    assert response.status_code == 202, response.text
+    job_id = response.json()["data"]["id"]
+    repo = Repository(st)
+    repo.update("jobs", job_id, {"state": "uploading", "worker_timings": {}}, user["id"])
+    repo.event(job_id, user["id"], "queued", "queued")
+    repo.event(job_id, user["id"], "uploading", "uploading")
+
+    detail = c.get(f"/api/gpu/jobs/{job_id}").json()["data"]
+
+    assert detail["timing_details"]["upload"]["source"] == "events"
+    assert detail["timing_details"]["upload"]["status"] == "in_progress"
+    assert detail["timing_details"]["upload"]["seconds"] is not None
+    assert detail["logs"] == detail["events"]
+
+
 def test_invalid_params_and_foreign_project_rejected_before_allocation(gpu_client):
     from app.gpu.repository import Repository
 

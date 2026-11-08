@@ -21,6 +21,9 @@ import { ReferencePicker, referenceAssets, supportsReferences } from './componen
 import { GoogleOAuthSetup } from './components/GoogleOAuthSetup';
 import { ComputeSpecs } from './components/ComputeSpecs';
 import { resolveGpuCheckRequest } from './lib/colab-check';
+import { jobStateLabel } from './lib/job-stage-rows';
+import { formatInstanceTime } from './lib/instance-time';
+import { JobHistoryDetails } from './components/JobHistoryDetails';
 import styles from './gpu.module.css';
 
 const tabs = ['创作', '任务', '作品', '算力'] as const;
@@ -81,18 +84,6 @@ function keyId() {
 
 function shown(value: unknown) {
   return value === null || value === undefined || value === '' ? '未知' : typeof value === 'object' ? JSON.stringify(value) : String(value);
-}
-
-function readableState(value?: string) {
-  return value
-    ? ({
-        queued: '排队中', pending: '等待中', preparing: '准备中', validating: '校验中',
-        creating: '创建运行时', reserved: '已预留', active: '运行时已启动', started: '已启动',
-        uploading: '上传中', running: '运行中', saving: '保存中', cleanup_pending: '清理中',
-        deleted: '已释放', quarantined: '已隔离', completed: '已完成', succeeded: '已完成',
-        failed: '失败', failed_final: '最终失败', cancelled: '已取消', cancelled_local: '已取消', blocked: '已阻止',
-      }[value] || value)
-    : '未知';
 }
 
 function workflowState(value?: string, active?: boolean) {
@@ -999,25 +990,20 @@ export default function App() {
               <button className={styles.iconGhost} type="button" aria-label="关闭" onClick={() => setDetail(null)}><X size={18} strokeWidth={1.6} aria-hidden /></button>
             </div>
             <dl className={styles.kv}>
-              <dt>状态</dt><dd>{readableState(detail.state)}</dd>
+              <dt>状态</dt><dd>{jobStateLabel(detail.state)}</dd>
               <dt>运行方式</dt><dd>{detail.provider === 'mock' ? '离线模拟' : detail.provider === 'colab' ? 'Colab GPU' : shown(detail.provider)}</dd>
-              <dt>创建时间</dt><dd>{String(detail.created_at || '未知')}</dd>
+              <dt>创建时间</dt><dd>{formatInstanceTime(detail.created_at)}</dd>
             </dl>
             {Array.isArray(detail.attempts) && <details className="foldable" open>
               <summary>执行记录</summary>
               <div className="foldContent">
                 {detail.attempts.length ? detail.attempts.map((attempt: Record<string, unknown>) => <p key={String(attempt.id)}>
-                  第 {String(attempt.attempt)} 次 · {readableState(String(attempt.state))}
+                  第 {String(attempt.attempt)} 次 · {jobStateLabel(String(attempt.state))}
                   {attempt.error_code ? ` · ${String(attempt.error_code)}` : ''}
                 </p>) : <p className="muted">还没有开始执行</p>}
               </div>
             </details>}
-            {detail.timings ? (
-              <details className="foldable">
-                <summary>各阶段耗时</summary>
-                <div className="foldContent"><pre className={styles.diagnostics}>{JSON.stringify(detail.timings, null, 2)}</pre></div>
-              </details>
-            ) : null}
+            {(detail.timings || detail.timing_details || detail.logs || detail.events) ? <JobHistoryDetails job={detail} /> : null}
             {detail.resolved_params ? (
               <details className="foldable">
                 <summary>本次使用的参数</summary>

@@ -22,6 +22,7 @@ from .compute import (
 )
 from .google import GoogleError
 from .mcp import MCPError
+from .newgpu.executor_plugins import TrustedExecutorAdapter
 from .prep import PREP_SPEC_KEY, cache_key, create_prep_job, prep_idempotency_key, prep_jobs_for
 
 TERMINAL_STATES = {"completed", "failed", "cancelled"}
@@ -284,6 +285,16 @@ class Scheduler:
         return self._merge_instance(job, instance)
 
     def _reuse_instance_lease(self, job: dict, instance: dict | None) -> dict:
+        """Retarget a retained lease under the same admission fence as claim/allocate."""
+        lock = getattr(self.db_store, "admission_lock", None)
+        if lock is None:
+            return self._reuse_instance_lease_locked(job, instance)
+        with lock(timeout=1.0) as acquired:
+            if not acquired:
+                return job
+            return self._reuse_instance_lease_locked(job, instance)
+
+    def _reuse_instance_lease_locked(self, job: dict, instance: dict | None) -> dict:
         """Retarget the retained instance's lease instead of creating a second runtime."""
         if not self._is_v020_job(job) or not isinstance(instance, dict):
             return job
@@ -439,10 +450,13 @@ class Scheduler:
             if hasattr(self.instance_service, "clock"):
                 self.instance_service.clock = self.clock
             target = getattr(self.instance_service, "mark_deleted")
+            kwargs = {"remote_deleted": True}
+            if job.get("_cleanup_instance_version") is not None:
+                kwargs["expected_version"] = job["_cleanup_instance_version"]
             instance = target(
                 job.get("owner_id"),
                 job["instance_id"],
-                remote_deleted=True,
+                **kwargs,
             )
             self._record_instance_usage(job, instance, self.clock())
         except Exception as exc:
@@ -471,6 +485,91 @@ class Scheduler:
 
     def _executor(self, job: dict):
         return self._factory(self.executor_factory, job)
+
+    def _trusted_plugin_cleanup(self, job: dict, lease: dict | None) -> dict:
+        """Run trusted-plugin lifecycle hooks without taking ownership from the provider.
+
+        The provider remains authoritative for runtime deletion.  Plugin hook
+        failures are therefore recorded as bounded internal status and never
+        change the cleanup path or expose plugin exception text to the caller.
+        """
+        if not lease or not lease.get("handle") or not job.get("execution_id"):
+            return job
+        try:
+            executor = self._executor(job)
+        except Exception as exc:  # noqa: BLE001 - plugin discovery must not block provider cleanup
+            logging.getLogger(__name__).warning(
+                "trusted plugin executor unavailable during cleanup: %s", type(exc).__name__
+            )
+            return job
+        if not isinstance(executor, TrustedExecutorAdapter):
+            return job
+
+        handle = self._lease_handle(lease)
+        if not isinstance(handle, dict):
+            return job
+        cancel_requested = bool(job.get("cancel_requested")) or job.get("requested_outcome") == "cancelled"
+        if cancel_requested and job.get("trusted_plugin_cancel_succeeded") is not True:
+            try:
+                executor.cancel(handle, job)
+            except Exception as exc:  # noqa: BLE001 - provider cleanup remains authoritative
+                logging.getLogger(__name__).warning(
+                    "trusted plugin cancel failed: %s", type(exc).__name__
+                )
+                try:
+                    job = self._update(
+                        "jobs",
+                        job["id"],
+                        {"trusted_plugin_cancel_error": "trusted_plugin_cancel_failed"},
+                        job.get("owner_id"),
+                    )
+                except Exception:  # noqa: BLE001 - bookkeeping must not block provider cleanup
+                    logging.getLogger(__name__).warning("could not record trusted plugin cancel failure")
+            else:
+                try:
+                    job = self._update(
+                        "jobs",
+                        job["id"],
+                        {
+                            "trusted_plugin_cancel_succeeded": True,
+                            "trusted_plugin_cancel_error": None,
+                        },
+                        job.get("owner_id"),
+                    )
+                except Exception:  # noqa: BLE001 - bookkeeping must not block provider cleanup
+                    logging.getLogger(__name__).warning("could not persist trusted plugin cancel marker")
+
+        if job.get("trusted_plugin_cleanup_succeeded") is True:
+            return job
+        try:
+            executor.cleanup(handle, job)
+        except Exception as exc:  # noqa: BLE001 - provider cleanup remains authoritative
+            logging.getLogger(__name__).warning(
+                "trusted plugin cleanup failed: %s", type(exc).__name__
+            )
+            try:
+                return self._update(
+                    "jobs",
+                    job["id"],
+                    {"trusted_plugin_cleanup_error": "trusted_plugin_cleanup_failed"},
+                    job.get("owner_id"),
+                )
+            except Exception:  # noqa: BLE001 - bookkeeping must not block provider cleanup
+                logging.getLogger(__name__).warning("could not record trusted plugin cleanup failure")
+                return job
+        try:
+            return self._update(
+                "jobs",
+                job["id"],
+                {
+                    "trusted_plugin_cleanup_succeeded": True,
+                    "trusted_plugin_cleanup_error": None,
+                },
+                job.get("owner_id"),
+            )
+        except Exception:  # noqa: BLE001 - bookkeeping must not block provider cleanup
+            logging.getLogger(__name__).warning("could not persist trusted plugin cleanup marker")
+            return job
 
     # Store/Repository compatibility surface.
     def _list(self, kind: str, owner_id: str | None = None) -> list[dict]:
@@ -603,7 +702,7 @@ class Scheduler:
 
     @staticmethod
     def _lease_blocks(lease: dict) -> bool:
-        return lease.get("state") in {"creating", "active", "busy", "idle", "cleanup_pending", "quarantined", "releasing"}
+        return lease.get("state") in {"creating", "active", "busy", "idle", "cleanup_pending", "quarantined", "releasing", "deleting"}
 
     def _has_capacity_blocker(self, job: dict) -> bool:
         return any(self._lease_blocks(x) and x.get("owner_job_id") != job["id"] for x in self._leases_for())
@@ -1068,8 +1167,15 @@ class Scheduler:
                 )
         try:
             # The Drive token is attached to an in-memory copy only; it is never persisted.
+            executor_job = {
+                **job,
+                "drive_cache": self._model_cache(job),
+                "deadline_epoch": job.get("deadline_epoch")
+                if job.get("deadline_epoch") is not None
+                else lease.get("deadline_epoch"),
+            }
             result = self._executor(job).start(
-                self._lease_handle(lease), {**job, "drive_cache": self._model_cache(job)}, execution_id
+                self._lease_handle(lease), executor_job, execution_id
             )
         except Exception as exc:
             return self._begin_failure(job, "gpu_start_failed", self._safe_error(exc))
@@ -1114,7 +1220,13 @@ class Scheduler:
         if not lease:
             return self._begin_failure(job, "gpu_lease_missing", "GPU lease is missing")
         try:
-            result = self._executor(job).poll(self._lease_handle(lease), job)
+            executor_job = {
+                **job,
+                "deadline_epoch": job.get("deadline_epoch")
+                if job.get("deadline_epoch") is not None
+                else lease.get("deadline_epoch"),
+            }
+            result = self._executor(job).poll(self._lease_handle(lease), executor_job)
         except Exception as exc:
             from .mcp import MCPTransient
 
@@ -1455,6 +1567,7 @@ class Scheduler:
 
     def _cleanup(self, job: dict) -> dict:
         lease = self._lease(job)
+        job = self._trusted_plugin_cleanup(job, lease)
         if lease and job.get("batch_id") and job.get("cleanup_final_state") == "completed":
             waiting = [j for j in self._list("jobs", job["owner_id"])
                        if j.get("batch_id") == job["batch_id"] and j["state"] not in TERMINAL_STATES
@@ -1587,7 +1700,9 @@ class Scheduler:
         self._update(
             "leases",
             lease["id"],
-            {"state": "deleted", "delete_attempts": attempts, "last_seen": self.clock()},
+            {"state": "deleted", "delete_attempts": attempts, "last_seen": self.clock(),
+             "remote_deleted": True, "remote_deleted_at": self.clock(),
+             "remote_delete_source": "cleanup_provider_confirmation"},
             job.get("owner_id"),
         )
         self._record_usage(job, lease, self.clock())
@@ -1624,6 +1739,10 @@ class Scheduler:
         if state == "validating":
             return self._validate(job)
         if state == "waiting_for_capacity":
+            # CPU cache preparation owns the first wait.  Do not allocate a
+            # durable/runtime instance until the prep decision is settled.
+            if self._await_prep(job):
+                return job if job.get("awaiting_prep") else self._update("jobs", job["id"], {"awaiting_prep": True}, job.get("owner_id"))
             if self._is_v020_job(job):
                 allocated = self._allocate_instance(job)
                 if allocated.get("state") in TERMINAL_STATES | {"cleaning_up", "cleanup_pending"}:
@@ -1641,8 +1760,6 @@ class Scheduler:
                             break
             if not self._is_v020_job(job) and self._has_capacity_blocker(job):
                 return job
-            if self._await_prep(job):
-                return job if job.get("awaiting_prep") else self._update("jobs", job["id"], {"awaiting_prep": True}, job.get("owner_id"))
             return self._set_state(job, "allocating", "GPU capacity available", awaiting_prep=False)
         if state == "allocating":
             return self._allocation(job)
@@ -1721,6 +1838,9 @@ class Scheduler:
     def _cleanup_orphan_lease(self, lease: dict) -> bool:
         owner_job_id = lease.get("owner_job_id")
         owner_id = lease.get("owner_id")
+        instance_id = lease.get("instance_id")
+        if not instance_id:
+            instance_id = (lease.get("data") or {}).get("instance_id")
         if not (
             isinstance(owner_job_id, str)
             and isinstance(owner_id, str)
@@ -1732,19 +1852,98 @@ class Scheduler:
             "id": owner_job_id,
             "owner_id": owner_id,
             "provider": lease.get("provider", "mock"),
-            "instance_id": lease.get("instance_id"),
+            "instance_id": instance_id,
         }
         handle = self._lease_handle(lease) or self._intent_handle(job, lease)
         if handle is None:
             return False
         if self.clock() < float(lease.get("cleanup_next_epoch") or 0):
             return False
+        if instance_id and any(
+            other.get("id") != lease.get("id")
+            and other.get("instance_id") == instance_id
+            and self._lease_blocks(other)
+            for other in self._leases_for(owner_id)
+        ):
+            return False
+
+        token = uuid.uuid4().hex
+        claim_method = getattr(self.store, "claim_orphan_lease", None)
+        if not callable(claim_method):
+            claim_method = None
+        try:
+            durable_instance = self._get("instances", instance_id, owner_id) if instance_id else None
+        except TypeError:
+            # Narrow legacy store doubles may not accept owner_id as a keyword.
+            durable_instance = self.store.get("instances", instance_id) if instance_id else None
+        # Retained-idle cleanup is a normal lease-expiry path, not an orphan
+        # claim.  claim_orphan_lease deliberately rejects retained_idle so a
+        # concurrent allocation cannot be mistaken for an orphan.
+        use_claim = claim_method and instance_id and durable_instance is not None and lease.get("state") != "idle"
+        claimed = claim_method(owner_id, lease["id"], instance_id, token, self.clock()) if use_claim else None
+        if use_claim and not claimed:
+            return False
+        if claimed:
+            lease = claimed[0]
+            instance = claimed[1]
+            job["instance_id"] = instance_id
+            if instance and instance.get("version") is not None:
+                job["_cleanup_instance_version"] = instance["version"]
+            handle = self._lease_handle(lease) or self._intent_handle(job, lease)
+
+        def finish(confirmed, error=None, attempts=0):
+            if confirmed:
+                if claimed:
+                    return bool(self.store.finish_orphan_lease(
+                        owner_id, lease["id"], instance_id, token, self.clock(),
+                        confirmed=True, error=error, attempts=attempts,
+                    ))
+                self._update("leases", lease["id"], {"state": "deleted", "last_seen": self.clock()}, owner_id)
+                return True
+            delay = min(
+                self.config.cleanup_retry_max_seconds,
+                self.config.cleanup_retry_base_seconds * (2 ** max(0, attempts - 1)),
+            )
+            message = error or "delete not confirmed"
+            finish_error = {"message": message, "retry_after": delay}
+            if claimed:
+                return bool(self.store.finish_orphan_lease(
+                    owner_id, lease["id"], instance_id, token, self.clock(),
+                    confirmed=False, error=finish_error, attempts=attempts,
+                ))
+            self._update("leases", lease["id"], {
+                "state": "cleanup_pending", "delete_attempts": attempts,
+                "cleanup_next_epoch": self.clock() + delay, "last_error": message,
+                "last_seen": self.clock(),
+            }, owner_id)
+            return False
+
+        # A creating row without a provider handle is only a durable placeholder;
+        # claim/fence it, release the local reservation, and never call a provider.
+        if lease.get("state") == "creating" and not lease.get("handle") and not int(lease.get("create_attempts") or 0):
+            try:
+                self._mark_instance_deleted(job)
+            except SchedulerError:
+                finish(False, "instance deletion confirmation failed")
+                return False
+            return finish(True)
+
         try:
             provider = self._provider(job)
-            if getattr(provider,'is_mock',False) and hasattr(provider,'recover_handle'):
-                handle=provider.recover_handle(handle)
+            if getattr(provider, "is_mock", False) and hasattr(provider, "recover_handle"):
+                handle = provider.recover_handle(handle)
             status = provider.inspect(handle)
             confirmed = bool(status.get("deleted"))
+            # A legacy/non-SQL test double has no durable claim.  Recheck at the
+            # final pre-delete boundary; SQL callers are fenced by claim state.
+            if not confirmed and instance_id and any(
+                other.get("id") != lease.get("id")
+                and other.get("instance_id") == instance_id
+                and self._lease_blocks(other)
+                for other in self._leases_for(owner_id)
+            ):
+                finish(False, "same instance acquired by another live lease")
+                return False
             if not confirmed:
                 response = provider.delete(handle)
                 confirmed = response is True or (
@@ -1753,125 +1952,201 @@ class Scheduler:
             error = None
         except Exception as exc:
             confirmed, error = False, self._safe_error(exc)
+
+        attempts = int(lease.get("delete_attempts") or 0) + 1
         if confirmed:
             try:
                 self._mark_instance_deleted(job)
-            except SchedulerError:
-                return False
-            self._update("leases", lease["id"], {"state": "deleted", "last_seen": self.clock()}, owner_id)
-            return True
-        attempts = int(lease.get("delete_attempts") or 0) + 1
-        delay = min(
-            self.config.cleanup_retry_max_seconds,
-            self.config.cleanup_retry_base_seconds * (2 ** max(0, attempts - 1)),
-        )
-        self._update(
-            "leases",
-            lease["id"],
-            {
-                "state": "cleanup_pending",
-                "delete_attempts": attempts,
-                "cleanup_next_epoch": self.clock() + delay,
-                "last_error": error or "delete not confirmed",
-                "last_seen": self.clock(),
-            },
-            owner_id,
-        )
+            except SchedulerError as exc:
+                confirmed = False
+                error = str(exc)
+        if confirmed:
+            return finish(True, attempts=attempts)
+        finish(False, error or "delete not confirmed", attempts)
         return False
 
-    def _orphan_instance_evidence(self, instance: dict) -> tuple[bool, dict | None]:
-        """Fail closed on ambiguous ownership, work, or remote allocation history."""
-        owner, instance_id = instance.get("owner_id"), self._instance_id(instance)
-        if not owner or not instance_id or instance.get("state") not in {"releasing", "cleanup_pending"}:
-            return False, None
-        jobs, leases = self._list("jobs"), self._leases_for()
-        current = instance.get("current_job_id")
-        if current and not any(
-            j["id"] == current and j.get("owner_id") == owner and j.get("state") in TERMINAL_STATES
-            for j in jobs
+    def _historical_orphan_evidence(self, instance: dict, lease: dict, leases: list[dict], jobs: list[dict]):
+        """Return a lease-owned inspection job only for an unambiguous old handoff."""
+        owner = instance.get("owner_id")
+        instance_id = self._instance_id(instance)
+        if (
+            not isinstance(owner, str)
+            or not owner
+            or not instance_id
+            or instance.get("state") not in {"releasing", "cleanup_pending"}
+            or lease.get("state") != "deleted"
+            or lease.get("owner_id") != owner
+            or lease.get("remote_delete_source") not in (None, "")
         ):
-            return False, None
-        related_jobs = [j for j in jobs if j.get("instance_id") == instance_id or j["id"] == current]
-        if any(j.get("owner_id") != owner or j.get("state") not in TERMINAL_STATES for j in related_jobs):
-            return False, None
-        bound = [lease for lease in leases if lease.get("instance_id") == instance_id]
-        if any(lease.get("owner_id") != owner or lease.get("state") != "deleted" for lease in bound):
-            return False, None
-        lease_id = instance.get("lease_id")
-        if not lease_id:
-            # An unbound placeholder never reached provider allocation: the scheduler
-            # persists a lease intent before create(). Missing historical links are
-            # NOT equivalent to a never-bound placeholder.
-            related_ids = {j["id"] for j in related_jobs}
-            evidence = bool(current) and not bound and not any(j.get("lease_id") for j in related_jobs)
-            evidence = evidence and not any(row.get("owner_job_id") in related_ids for row in leases)
-            evidence = evidence and not any(instance.get(k) for k in ("runtime_id", "handle", "tunnel_endpoint"))
-            return evidence, None
-        lease = next((row for row in leases if row["id"] == lease_id), None)
-        if not lease or lease.get("owner_id") != owner or lease.get("state") != "deleted":
-            return False, None
-        if lease.get("provider") not in {"mock", "colab"}:
-            return False, None
-        if any(instance.get(k) != lease.get(k) for k in ("provider", "account_id")):
-            return False, None
-        if not all(lease.get(k) for k in ("owner_job_id", "request_id", "runtime_id")):
-            return False, None
-        if not any(j["id"] == lease["owner_job_id"] and j.get("owner_id") == owner
-                   and j.get("state") in TERMINAL_STATES for j in jobs):
-            return False, None
-        # Handoff can rebind the original lease to another instance. Never act on
-        # its runtime while any non-deleted alias or live job still references it.
-        if any(row.get("state") != "deleted" and row.get("runtime_id") == lease["runtime_id"]
-               for row in leases):
-            return False, None
-        if any((j.get("lease_id") == lease_id or j["id"] == lease["owner_job_id"])
-               and (j.get("owner_id") != owner or j.get("state") not in TERMINAL_STATES) for j in jobs):
-            return False, None
-        return True, lease
+            return None
+        account = instance.get("account_id")
+        if not account or lease.get("account_id") != account:
+            return None
+        provider = lease.get("provider")
+        if provider not in {"mock", "colab"} or instance.get("provider") not in {None, provider}:
+            return None
+        runtime_id = lease.get("runtime_id")
+        if not isinstance(runtime_id, str) or not runtime_id or not lease.get("request_id"):
+            return None
+        if instance.get("runtime_id") not in (None, runtime_id):
+            return None
+        current_job_id = instance.get("current_job_id")
+        owner_job_id = lease.get("owner_job_id")
+        by_id = {row.get("id"): row for row in jobs}
+        if not owner_job_id or not by_id.get(owner_job_id):
+            return None
+        if by_id[owner_job_id].get("owner_id") != owner or by_id[owner_job_id].get("state") not in TERMINAL_STATES:
+            return None
+        if current_job_id:
+            current = by_id.get(current_job_id)
+            if not current or current.get("owner_id") != owner or current.get("state") not in TERMINAL_STATES:
+                return None
+        lease_instance_id = lease.get("instance_id")
+        if lease_instance_id in ("",):
+            lease_instance_id = None
+        lease_rebound = lease_instance_id not in (None, instance_id)
+        owner_job = by_id[owner_job_id]
+        if lease_rebound:
+            successor_instance_id = owner_job.get("instance_id")
+            if successor_instance_id != lease_instance_id or successor_instance_id == instance_id:
+                return None
+        related = [
+            row for row in jobs
+            if row.get("instance_id") == instance_id or row.get("id") in {current_job_id, owner_job_id}
+        ]
+        if any(row.get("owner_id") != owner or row.get("state") not in TERMINAL_STATES for row in related):
+            return None
+        for row in related:
+            row_provider = row.get("provider") or (row.get("execution_policy") or {}).get("provider")
+            allowed_instances = {None, instance_id}
+            if row.get("id") == owner_job_id and lease_rebound:
+                allowed_instances.add(lease_instance_id)
+            if (
+                row.get("account_id") not in (None, account)
+                or row.get("instance_id") not in allowed_instances
+                or row_provider not in (None, provider)
+            ):
+                return None
+        for row in leases:
+            if row.get("id") == lease.get("id") or row.get("state") == "deleted":
+                continue
+            if row.get("instance_id") == instance_id or row.get("runtime_id") == runtime_id:
+                return None
+        job = {
+            "id": owner_job_id,
+            "owner_id": owner,
+            "provider": provider,
+            "account_id": account,
+            "instance_id": instance_id,
+        }
+        handle = self._intent_handle(job, lease)
+        if not handle:
+            return None
+        if isinstance(lease.get("handle"), dict):
+            handle = {**lease["handle"], **handle}
+        return job, handle
 
-    def _cleanup_orphan_instance(self, instance: dict) -> bool:
-        if self.instance_service is None:
-            return False
-        safe, lease = self._orphan_instance_evidence(instance)
-        if not safe:
-            return False
-        owner, instance_id = instance["owner_id"], self._instance_id(instance)
-        if lease:
-            job = {"id": lease["owner_job_id"], "owner_id": owner, "provider": lease["provider"],
-                   "account_id": lease.get("account_id")}
-            # Use a lease-owned identity, never an account-wide empty runtime list.
-            handle = self._intent_handle(job, lease)
-            if not handle:
-                return False
-            if isinstance(lease.get("handle"), dict):
-                handle = {**lease["handle"], **handle}
+    def _cleanup_historical_orphan_instance(self, instance: dict, lease: dict, leases: list[dict], jobs: list[dict]) -> bool:
+        """Inspect, then persist deletion, for a legacy lease missing provenance."""
+        now = self.clock()
+        for row in (instance, lease):
+            retry_at = row.get("cleanup_next_epoch")
+            if retry_at is None:
+                continue
             try:
-                status = self._provider(job).inspect(handle)
-            except Exception:
-                return False  # Unknown remote state must keep the budget reserved.
-            if not isinstance(status, dict) or status.get("deleted") is not True:
+                if float(now) < float(retry_at):
+                    return False
+            except (TypeError, ValueError):
                 return False
-            if status.get("allocation_unknown") or status.get("operation_pending"):
-                return False
-        # Adapter I/O happens outside the dispatch lock. Revalidate ownership,
-        # then let mark_deleted take its own admission lock; expected_version is
-        # the atomic fence against a concurrent transition.
-        with self.db_store.dispatch_lock() as acquired:
-            if not acquired:
-                return False
-            latest = self._get("instances", instance_id, owner)
-            if not latest or latest.get("version") != instance.get("version"):
-                return False
-            safe, latest_lease = self._orphan_instance_evidence(latest)
-            if not safe or latest_lease != lease:
-                return False
-            expected_version = latest.get("version", 0)
-        try:
-            self.instance_service.mark_deleted(owner, instance_id,
-                                               expected_version=expected_version, remote_deleted=True)
-        except Exception:
+        evidence = self._historical_orphan_evidence(instance, lease, leases, jobs)
+        if evidence is None:
             return False
-        return True
+        claim = getattr(self.store, "claim_orphan_instance", None)
+        finish = getattr(self.store, "finish_orphan_instance", None)
+        if not callable(claim) or not callable(finish):
+            return False
+        token = uuid.uuid4().hex
+        claimed = claim(instance["owner_id"], self._instance_id(instance), lease["id"], token, self.clock())
+        if not claimed:
+            return False
+        claim_instance, claim_lease = claimed
+        job, handle = evidence
+        try:
+            provider = self._provider(job)
+            if getattr(provider, "is_mock", False) and hasattr(provider, "recover_handle"):
+                handle = provider.recover_handle(handle)
+            status = provider.inspect(handle)
+            confirmed = (
+                isinstance(status, dict)
+                and status.get("deleted") is True
+                and not any(status.get(key) for key in ("allocation_unknown", "operation_pending", "ambiguous", "pending"))
+            )
+            error = None if confirmed else "remote deletion not unambiguously confirmed"
+        except Exception as exc:
+            confirmed, error = False, self._safe_error(exc)
+        return bool(finish(
+            instance["owner_id"], self._instance_id(instance), lease["id"], token, self.clock(),
+            confirmed=confirmed, error=error, expected_version=claim_instance.get("version"),
+            expected_lease_version=claim_lease.get("version"),
+        )) and confirmed
+
+    def _reconcile_deleted_lease_instances(self, leases: list[dict]) -> int:
+        """Converge old releasing rows only with durable remote-delete evidence."""
+        if self.instance_service is None:
+            return 0
+        by_lease = {row.get("id"): row for row in leases if row.get("id")}
+        recovered = 0
+        service_instances = self._service_instances()
+        jobs = None
+        for instance in service_instances:
+            if instance.get("state") not in {"releasing", "cleanup_pending"}:
+                continue
+            lease_id = instance.get("lease_id")
+            lease = by_lease.get(lease_id)
+            if not lease or lease.get("state") != "deleted":
+                continue
+            source = lease.get("remote_delete_source")
+            if source in (None, ""):
+                if jobs is None:
+                    jobs = self._list("jobs")
+                if self._cleanup_historical_orphan_instance(instance, lease, leases, jobs):
+                    recovered += 1
+                continue
+            if lease.get("remote_deleted") is not True or source not in {
+                "cleanup_provider_confirmation", "orphan_cleanup_provider_confirmation",
+            }:
+                continue
+            if lease.get("owner_id") != instance.get("owner_id"):
+                continue
+            current_instance_id = self._instance_id(instance)
+            lease_instance_json = (lease.get("data") or {}).get("instance_id")
+            lease_instance_typed = lease.get("instance_id")
+            if (
+                lease_instance_json not in (None, "")
+                and lease_instance_typed not in (None, "")
+                and lease_instance_json != lease_instance_typed
+            ):
+                continue
+            lease_instance_id = lease_instance_json or lease_instance_typed
+            if not current_instance_id or lease_instance_id != current_instance_id:
+                continue
+            lease_account = lease.get("account_id")
+            instance_account = instance.get("account_id")
+            if (not lease_account or not instance_account or lease_account != instance_account):
+                continue
+            job = {
+                "id": lease.get("owner_job_id") or f"orphan-instance:{instance.get('id')}",
+                "owner_id": instance.get("owner_id"),
+                "provider": lease.get("provider", "mock"),
+                "instance_id": instance.get("id"),
+                "_cleanup_instance_version": instance.get("version"),
+            }
+            try:
+                self._mark_instance_deleted(job)
+            except SchedulerError:
+                continue
+            recovered += 1
+        return recovered
 
     def watchdog(self) -> dict:
         """Independent process entrypoint for timeout, orphan, and cleanup compensation."""
@@ -1886,9 +2161,10 @@ class Scheduler:
                 and (x.get("state") in {"cleanup_pending", "cleaning_up"} or self._expired(x))
             ]
             job_by_id = {x["id"]: x for x in all_jobs}
+            all_leases = self._leases_for()
             leases = [
                 x
-                for x in self._leases_for()
+                for x in all_leases
                 if x.get("state") != "deleted"
                 and (
                     x.get("owner_job_id") not in job_by_id
@@ -1913,18 +2189,16 @@ class Scheduler:
                 continue
             associated = job_by_id.get(lease.get("owner_job_id"))
             expired = float(lease.get("deadline_epoch") or 0) < self.clock()
-            if (associated is None and expired) or (
+            if (
+                associated is None and expired
+            ) or (
                 associated
                 and associated.get("state") in TERMINAL_STATES
                 and lease.get("owner_id") == associated.get("owner_id")
             ):
                 if self._cleanup_orphan_lease(lease):
                     recovered += 1
-        # Legacy scheduler-only stores have no instance table or service.
-        if self.instance_service is not None and hasattr(self.db_store, "Session"):
-            for instance in self._list("instances"):
-                if self._cleanup_orphan_instance(instance):
-                    recovered += 1
+        recovered += self._reconcile_deleted_lease_instances(all_leases)
         return {"acquired": True, "recovered": recovered}
 
     def cancel(self, owner_id: str, job_id: str) -> dict:
