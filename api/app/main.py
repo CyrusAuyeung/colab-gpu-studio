@@ -448,6 +448,17 @@ def rollback_workflow(body: dict, request: Request, user=Depends(current_user), 
     return ok(registry.rollback(user["id"], body.get("workflow_key"), body.get("version")), request)
 
 
+@router.post("/workflows/{workflow_id}/deactivate")
+def deactivate_workflow(
+    workflow_id: str, body: dict, request: Request, user=Depends(current_user), st=Depends(get_store)
+):
+    admin(user)
+    if not isinstance(body, dict) or body.get("confirmed") is not True:
+        raise APIError("CONFIRMATION_REQUIRED", "停用必须明确confirmed")
+    _, registry = repo_registry(st, user)
+    return ok(registry.deactivate(user["id"], workflow_id), request)
+
+
 @router.get("/presets")
 def presets(
     request: Request,

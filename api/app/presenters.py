@@ -62,6 +62,7 @@ def public_job(job):
     result = {k: v for k, v in job.items() if k in keys}
     result["job_id"] = job["id"]
     result["mock"] = job.get("provider") == "mock"
+    result["workflow_smoke"] = job.get("workflow_smoke") is True or (job.get("snapshot") or {}).get("workflow_smoke") is True
     result["resolved_params"] = (job.get("snapshot") or {}).get("resolved_params", {})
     return result
 
