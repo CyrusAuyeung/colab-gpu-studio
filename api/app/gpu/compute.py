@@ -42,6 +42,15 @@ class GpuConfig:
     cleanup_retry_max_seconds: float = 300.0
     claim_ttl_seconds: float = 120.0
     spec_allowlist: tuple[str, ...] = ()
+    # Trusted executor plugins are administrator-only and fail closed unless
+    # explicitly enabled with an exact module:entrypoint@version allowlist.
+    trusted_executor_enabled: bool = False
+    trusted_executor_type: str = "trusted"
+    trusted_executor_module: str = ""
+    trusted_executor_entrypoint: str = ""
+    trusted_executor_version: str = ""
+    trusted_executor_allowlist: tuple[str, ...] = ()
+    trusted_executor_cache_namespace: str = "trusted"
 
     @staticmethod
     def _bool(name: str, default: bool) -> bool:
@@ -68,6 +77,11 @@ class GpuConfig:
         allowlist = tuple(
             item.strip() for item in os.getenv("GPU_SPEC_ALLOWLIST", "").split(",") if item.strip()
         )
+        trusted_allowlist = tuple(
+            item.strip()
+            for item in os.getenv("GPU_TRUSTED_EXECUTOR_ALLOWLIST", "").split(",")
+            if item.strip()
+        )
         return cls(
             enabled=cls._bool("GPU_ENABLED", True),
             real_enabled=False if os.getenv("STUDIO_OFFLINE_TEST") == "1" else cls._bool("GPU_REAL_ENABLED", False),
@@ -82,6 +96,13 @@ class GpuConfig:
             cleanup_retry_max_seconds=max(0.0, cls._number("GPU_CLEANUP_RETRY_MAX_SECONDS", 300)),
             claim_ttl_seconds=max(1.0, cls._number("GPU_CLAIM_TTL_SECONDS", 120)),
             spec_allowlist=allowlist,
+            trusted_executor_enabled=cls._bool("GPU_TRUSTED_EXECUTOR_ENABLED", False),
+            trusted_executor_type=os.getenv("GPU_TRUSTED_EXECUTOR_TYPE", "trusted").strip(),
+            trusted_executor_module=os.getenv("GPU_TRUSTED_EXECUTOR_MODULE", "").strip(),
+            trusted_executor_entrypoint=os.getenv("GPU_TRUSTED_EXECUTOR_ENTRYPOINT", "").strip(),
+            trusted_executor_version=os.getenv("GPU_TRUSTED_EXECUTOR_VERSION", "").strip(),
+            trusted_executor_allowlist=trusted_allowlist,
+            trusted_executor_cache_namespace=os.getenv("GPU_TRUSTED_EXECUTOR_CACHE_NAMESPACE", "trusted").strip(),
         )
 
 
@@ -345,6 +366,41 @@ def default_provider_factory(
     return DisabledProvider(f"unknown GPU provider: {name}")
 
 
+def _is_builtin_mcp_job(job: dict) -> bool:
+    """System CUDA smoke/prep jobs are never routed through trusted plugins."""
+    record = job if isinstance(job, dict) else {}
+    snapshot = record.get("snapshot")
+    snapshot = snapshot if isinstance(snapshot, dict) else {}
+    manifest = snapshot.get("manifest") if isinstance(snapshot.get("manifest"), dict) else {}
+    values = {
+        record.get("kind"),
+        record.get("model_id"),
+        snapshot.get("kind"),
+        snapshot.get("model_id"),
+        manifest.get("kind"),
+        manifest.get("executor"),
+    }
+    if any(
+        isinstance(value, str)
+        and value in {"system", "prep", "system-prep", "cuda-prep", "system-cuda-smoke", "system-cuda-prep"}
+        for value in values
+    ):
+        return True
+    return any(snapshot.get(flag) is True or record.get(flag) is True for flag in ("system_smoke", "prep"))
+
+
+def _mcp_executor(job: dict, *, store=None, owner_id: str | None = None):
+    try:
+        from .mcp import MCPGPUExecutor
+    except (ImportError, ModuleNotFoundError):
+        return DisabledExecutor()
+    return MCPGPUExecutor.from_environment(
+        store=store,
+        owner_id=owner_id or job.get("owner_id"),
+        account_id=job.get("account_id"),
+    )
+
+
 def default_executor_factory(
     job: dict, config: GpuConfig | None = None, *, store=None, owner_id: str | None = None
 ):
@@ -353,15 +409,21 @@ def default_executor_factory(
     if name == "mock":
         return MockGPUExecutor()
     if name == "colab" and config.real_enabled and os.getenv("STUDIO_OFFLINE_TEST") != "1":
-        try:
-            from .mcp import MCPGPUExecutor
-        except (ImportError, ModuleNotFoundError):
+        # Built-in diagnostics/prep retain the legacy MCP path forever.  They
+        # intentionally have no model revision and therefore cannot satisfy
+        # the trusted-plugin cache contract.
+        if _is_builtin_mcp_job(job):
+            return _mcp_executor(job, store=store, owner_id=owner_id)
+
+        from .newgpu.executor_plugins import load_trusted_executor, select_registered_executor_type
+
+        # Existing Comfy jobs preserve MCP; plugins require explicit selection.
+        executor_type = select_registered_executor_type(config, job)
+        if executor_type is None:
+            return _mcp_executor(job, store=store, owner_id=owner_id)
+        if not config.trusted_executor_enabled:
             return DisabledExecutor()
-        return MCPGPUExecutor.from_environment(
-            store=store,
-            owner_id=owner_id or job.get("owner_id"),
-            account_id=job.get("account_id"),
-        )
+        return load_trusted_executor(config)
     return DisabledExecutor()
 
 

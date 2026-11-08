@@ -22,6 +22,7 @@ from .compute import (
 )
 from .google import GoogleError
 from .mcp import MCPError
+from .newgpu.executor_plugins import TrustedExecutorAdapter
 from .prep import PREP_SPEC_KEY, cache_key, create_prep_job, prep_idempotency_key, prep_jobs_for
 
 TERMINAL_STATES = {"completed", "failed", "cancelled"}
@@ -484,6 +485,91 @@ class Scheduler:
 
     def _executor(self, job: dict):
         return self._factory(self.executor_factory, job)
+
+    def _trusted_plugin_cleanup(self, job: dict, lease: dict | None) -> dict:
+        """Run trusted-plugin lifecycle hooks without taking ownership from the provider.
+
+        The provider remains authoritative for runtime deletion.  Plugin hook
+        failures are therefore recorded as bounded internal status and never
+        change the cleanup path or expose plugin exception text to the caller.
+        """
+        if not lease or not lease.get("handle") or not job.get("execution_id"):
+            return job
+        try:
+            executor = self._executor(job)
+        except Exception as exc:  # noqa: BLE001 - plugin discovery must not block provider cleanup
+            logging.getLogger(__name__).warning(
+                "trusted plugin executor unavailable during cleanup: %s", type(exc).__name__
+            )
+            return job
+        if not isinstance(executor, TrustedExecutorAdapter):
+            return job
+
+        handle = self._lease_handle(lease)
+        if not isinstance(handle, dict):
+            return job
+        cancel_requested = bool(job.get("cancel_requested")) or job.get("requested_outcome") == "cancelled"
+        if cancel_requested and job.get("trusted_plugin_cancel_succeeded") is not True:
+            try:
+                executor.cancel(handle, job)
+            except Exception as exc:  # noqa: BLE001 - provider cleanup remains authoritative
+                logging.getLogger(__name__).warning(
+                    "trusted plugin cancel failed: %s", type(exc).__name__
+                )
+                try:
+                    job = self._update(
+                        "jobs",
+                        job["id"],
+                        {"trusted_plugin_cancel_error": "trusted_plugin_cancel_failed"},
+                        job.get("owner_id"),
+                    )
+                except Exception:  # noqa: BLE001 - bookkeeping must not block provider cleanup
+                    logging.getLogger(__name__).warning("could not record trusted plugin cancel failure")
+            else:
+                try:
+                    job = self._update(
+                        "jobs",
+                        job["id"],
+                        {
+                            "trusted_plugin_cancel_succeeded": True,
+                            "trusted_plugin_cancel_error": None,
+                        },
+                        job.get("owner_id"),
+                    )
+                except Exception:  # noqa: BLE001 - bookkeeping must not block provider cleanup
+                    logging.getLogger(__name__).warning("could not persist trusted plugin cancel marker")
+
+        if job.get("trusted_plugin_cleanup_succeeded") is True:
+            return job
+        try:
+            executor.cleanup(handle, job)
+        except Exception as exc:  # noqa: BLE001 - provider cleanup remains authoritative
+            logging.getLogger(__name__).warning(
+                "trusted plugin cleanup failed: %s", type(exc).__name__
+            )
+            try:
+                return self._update(
+                    "jobs",
+                    job["id"],
+                    {"trusted_plugin_cleanup_error": "trusted_plugin_cleanup_failed"},
+                    job.get("owner_id"),
+                )
+            except Exception:  # noqa: BLE001 - bookkeeping must not block provider cleanup
+                logging.getLogger(__name__).warning("could not record trusted plugin cleanup failure")
+                return job
+        try:
+            return self._update(
+                "jobs",
+                job["id"],
+                {
+                    "trusted_plugin_cleanup_succeeded": True,
+                    "trusted_plugin_cleanup_error": None,
+                },
+                job.get("owner_id"),
+            )
+        except Exception:  # noqa: BLE001 - bookkeeping must not block provider cleanup
+            logging.getLogger(__name__).warning("could not persist trusted plugin cleanup marker")
+            return job
 
     # Store/Repository compatibility surface.
     def _list(self, kind: str, owner_id: str | None = None) -> list[dict]:
@@ -1081,8 +1167,15 @@ class Scheduler:
                 )
         try:
             # The Drive token is attached to an in-memory copy only; it is never persisted.
+            executor_job = {
+                **job,
+                "drive_cache": self._model_cache(job),
+                "deadline_epoch": job.get("deadline_epoch")
+                if job.get("deadline_epoch") is not None
+                else lease.get("deadline_epoch"),
+            }
             result = self._executor(job).start(
-                self._lease_handle(lease), {**job, "drive_cache": self._model_cache(job)}, execution_id
+                self._lease_handle(lease), executor_job, execution_id
             )
         except Exception as exc:
             return self._begin_failure(job, "gpu_start_failed", self._safe_error(exc))
@@ -1127,7 +1220,13 @@ class Scheduler:
         if not lease:
             return self._begin_failure(job, "gpu_lease_missing", "GPU lease is missing")
         try:
-            result = self._executor(job).poll(self._lease_handle(lease), job)
+            executor_job = {
+                **job,
+                "deadline_epoch": job.get("deadline_epoch")
+                if job.get("deadline_epoch") is not None
+                else lease.get("deadline_epoch"),
+            }
+            result = self._executor(job).poll(self._lease_handle(lease), executor_job)
         except Exception as exc:
             from .mcp import MCPTransient
 
@@ -1468,6 +1567,7 @@ class Scheduler:
 
     def _cleanup(self, job: dict) -> dict:
         lease = self._lease(job)
+        job = self._trusted_plugin_cleanup(job, lease)
         if lease and job.get("batch_id") and job.get("cleanup_final_state") == "completed":
             waiting = [j for j in self._list("jobs", job["owner_id"])
                        if j.get("batch_id") == job["batch_id"] and j["state"] not in TERMINAL_STATES

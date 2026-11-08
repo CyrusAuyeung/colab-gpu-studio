@@ -336,4 +336,22 @@ def workbench_action(instance_id: str, body: WorkbenchActionInput, request: Requ
     return ok(_safe_public(result), request, 202 if body.action in {"set_reviewed_params", "queue_reviewed_workflow", "stop_current_job"} else 200)
 
 
+@router.get("/workflows/{workflow_key}/preview")
+def workflow_graph_preview(
+    workflow_key: str,
+    request: Request,
+    version: int,
+    user=Depends(current_user),
+):
+    """Owner-scoped offline graph preview; no instance or Comfy connection."""
+    wb = _workbench(request, None)
+    try:
+        result = wb.get_reviewed_graph(
+            user["id"], {"workflow_key": workflow_key, "workflow_version": version}
+        )
+    except WorkbenchError as exc:
+        raise APIError(exc.code, str(exc), exc.status, exc.retryable) from exc
+    return ok(_safe_public(result), request)
+
+
 __all__ = ["router", "RetentionInput", "StopInput", "WorkbenchActionInput"]

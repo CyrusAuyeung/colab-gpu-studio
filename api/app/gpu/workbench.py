@@ -45,6 +45,16 @@ SENSITIVE_KEYS = frozenset(
         "cookie",
         "secret",
         "password",
+        "credential",
+        "credentials",
+        "api_key",
+        "apikey",
+        "client_secret",
+        "clientsecret",
+        "private_key",
+        "privatekey",
+        "secret_key",
+        "secretkey",
         "handle",
         "runtime_handle",
         "signed_url",
@@ -217,7 +227,7 @@ class WorkbenchService:
         def scan(value):
             if isinstance(value, Mapping):
                 for key, item in value.items():
-                    if str(key).lower() in SENSITIVE_KEYS:
+                    if re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", str(key)).lower() in SENSITIVE_KEYS:
                         raise WorkbenchError("WORKBENCH_INPUT_FORBIDDEN", "工作台不接受任意代码、URL、节点或凭据", 422)
                     scan(item)
             elif isinstance(value, list):
@@ -249,19 +259,119 @@ class WorkbenchService:
     @classmethod
     def _safe_public_value(cls, value):
         """Copy public JSON while removing credential/URL-shaped fields."""
+        blocked = {
+            re.sub(r"[^a-z0-9]+", "_", re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", str(key)).lower()).strip("_")
+            for key in SENSITIVE_KEYS
+        }
         if isinstance(value, Mapping):
-            return {
-                str(key): cls._safe_public_value(item)
-                for key, item in value.items()
-                if str(key).lower() not in SENSITIVE_KEYS and "url" not in str(key).lower()
-            }
+            result = {}
+            for key, item in value.items():
+                normalized = re.sub(r"[^a-z0-9]+", "_", re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", str(key)).lower()).strip("_")
+                if normalized in blocked or "url" in normalized:
+                    continue
+                result[str(key)] = cls._safe_public_value(item)
+            return result
         if isinstance(value, list):
             return [cls._safe_public_value(item) for item in value]
         if isinstance(value, tuple):
             return [cls._safe_public_value(item) for item in value]
         if isinstance(value, str):
-            return re.sub(r"(?:https?|wss?)://[^\\s\\\"'<>]+", "[REDACTED_URL]", value)
+            return re.sub(r"(?:https?|wss?)://[^\s\"'<>]+", "[REDACTED_URL]", value)
         return copy.deepcopy(value)
+
+    @classmethod
+    def _safe_preview_graph(cls, value):
+        """Return graph metadata without turning preview into a runtime proxy.
+
+        Published graphs are still treated as untrusted presentation data at
+        this boundary.  Keep node/link structure useful to the viewer, while
+        dropping executable or credential-shaped fields.  In particular this
+        method intentionally does not reuse ``_safe_public_value`` because a
+        UI graph commonly has a legitimate ``nodes`` collection.
+        """
+        blocked = {
+            "authorization",
+            "cookie",
+            "password",
+            "secret",
+            "token",
+            "access_token",
+            "refresh_token",
+            "connection_token",
+            "credential",
+            "credentials",
+            "api_key",
+            "apikey",
+            "client_secret",
+            "clientsecret",
+            "private_key",
+            "privatekey",
+            "secret_key",
+            "secretkey",
+            "runtime_handle",
+            "signed_url",
+            "python",
+            "shell",
+            "command",
+            "script",
+            "install",
+            "websocket",
+        }
+        if isinstance(value, Mapping):
+            blocked = {
+                re.sub(r"[^a-z0-9]+", "_", re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", str(key)).lower()).strip("_")
+                for key in blocked
+            }
+            result = {}
+            for key, item in value.items():
+                normalized = re.sub(r"[^a-z0-9]+", "_", re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", str(key)).lower()).strip("_")
+                if normalized in blocked or "url" in normalized:
+                    continue
+                result[str(key)] = cls._safe_preview_graph(item)
+            return result
+        if isinstance(value, list):
+            return [cls._safe_preview_graph(item) for item in value]
+        if isinstance(value, tuple):
+            return [cls._safe_preview_graph(item) for item in value]
+        if isinstance(value, str):
+            return re.sub(r"(?:https?|wss?)://[^\s\"'<>]+", "[REDACTED_URL]", value)
+        return copy.deepcopy(value)
+
+    def get_reviewed_graph(self, owner, payload: Mapping):
+        """Read a published graph without requiring a live/verified instance.
+
+        This is deliberately separate from write-capable instance actions:
+        owner scoping and the published-workflow review boundary remain in
+        effect, but offline/history instances can still render their graph.
+        """
+        workflow = self._workflow(owner, payload)
+        graph = workflow.get("api_graph")
+        if not isinstance(graph, Mapping):
+            raise WorkbenchError("WORKFLOW_INVALID", "已发布工作流缺少受审查图", 409)
+
+        editable = workflow.get("editable_graph")
+        models = []
+        for model in self._rows("models", owner):
+            if model.get("model_id") != workflow.get("model_id"):
+                continue
+            summary = {"model_id": model.get("model_id")}
+            for key in ("name", "display_name", "description", "enabled", "is_mock", "license_status", "disabled_reason"):
+                if model.get(key) is not None:
+                    summary[key] = self._safe_public_value(model[key])
+            models.append(summary)
+
+        return {
+            "workflow_key": workflow["workflow_key"],
+            "workflow_version": workflow["workflow_version"],
+            "model_id": workflow.get("model_id"),
+            "description": workflow.get("description"),
+            "reviewed": True,
+            "published": True,
+            "ui_graph": self._safe_preview_graph(editable) if isinstance(editable, (Mapping, list)) else None,
+            "api_graph": self._safe_preview_graph(graph),
+            "parameters": self._public_parameters(workflow.get("manifest") or {}),
+            "models": models,
+        }
 
     @classmethod
     def _public_parameters(cls, manifest):
@@ -412,6 +522,8 @@ class WorkbenchService:
     def _operation(self, owner, instance, action, payload, key):
         if action not in WORKBENCH_ACTIONS:
             raise WorkbenchError("WORKBENCH_ACTION_FORBIDDEN", "工作台动作不在固定 allowlist", 403)
+        if action in WRITE_ACTIONS and not self._is_verified(instance):
+            raise WorkbenchError("COMFY_UNVERIFIED", "实例尚未通过服务端运行时验证", 503, True)
         if action in WRITE_ACTIONS:
             if not isinstance(key, str) or not key or len(key) > 200:
                 raise WorkbenchError("IDEMPOTENCY_REQUIRED", "写入工作台必须提供固定幂等键", 422)
@@ -455,18 +567,12 @@ class WorkbenchService:
         return {"workflows": self.describe(owner, instance)["allowed_workflows"], "mock": self._is_mock(instance)}
 
     def _action_get_reviewed_graph(self, owner, instance, payload):
-        self._mock_or_unverified(instance)
-        workflow = self._workflow(owner, payload)
-        graph = workflow.get("api_graph")
-        if not isinstance(graph, Mapping):
-            raise WorkbenchError("WORKFLOW_INVALID", "已发布工作流缺少受审查图", 409)
-        return {
-            "workflow_key": workflow["workflow_key"],
-            "workflow_version": workflow["workflow_version"],
-            "graph": copy.deepcopy(dict(graph)),
-            "reviewed": True,
-            "published": True,
-        }
+        # Graph reading is the one deliberately offline-safe workbench
+        # operation.  It must not be blocked by COMFY_UNVERIFIED or instance
+        # health; all mutating actions retain their existing gates.
+        result = self.get_reviewed_graph(owner, payload)
+        result["graph"] = copy.deepcopy(result["api_graph"])
+        return result
 
     def _action_set_reviewed_params(self, owner, instance, payload):
         self._mock_or_unverified(instance)
@@ -558,7 +664,7 @@ class WorkbenchService:
         for asset_id in job.get("output_asset_ids", []) if isinstance(job, Mapping) else []:
             for row in self._rows("assets", owner):
                 if row.get("id") == asset_id:
-                    assets.append({k: v for k, v in row.items() if str(k).lower() not in SENSITIVE_KEYS})
+                    assets.append(self._safe_public_value(row))
         return {"job_id": job.get("id"), "artifacts": assets, "mock": self._is_mock(instance)}
 
     def _action_stop_current_job(self, owner, instance, payload):

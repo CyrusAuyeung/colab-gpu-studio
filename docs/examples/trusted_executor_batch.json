@@ -1,0 +1,36 @@
+{
+  "mode": "batch",
+  "idle_seconds": 0,
+  "jobs": [
+    {
+      "project_id": "project-reviewed",
+      "model_id": "laya-demo",
+      "workflow_key": "laya-json",
+      "workflow_version": "1.0.0",
+      "params": {
+        "prompt": "contract fixture only",
+        "seed": 7
+      },
+      "execution_policy": {
+        "provider": "colab",
+        "lifecycle": "batch",
+        "max_runtime_minutes": 10
+      }
+    },
+    {
+      "project_id": "project-reviewed",
+      "model_id": "laya-demo",
+      "workflow_key": "laya-json",
+      "workflow_version": "1.0.0",
+      "params": {
+        "prompt": "second contract fixture",
+        "seed": 8
+      },
+      "execution_policy": {
+        "provider": "colab",
+        "lifecycle": "batch",
+        "max_runtime_minutes": 10
+      }
+    }
+  ]
+}

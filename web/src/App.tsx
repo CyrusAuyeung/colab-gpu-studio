@@ -21,6 +21,9 @@ import { ReferencePicker, referenceAssets, supportsReferences } from './componen
 import { GoogleOAuthSetup } from './components/GoogleOAuthSetup';
 import { ComputeSpecs } from './components/ComputeSpecs';
 import { resolveGpuCheckRequest } from './lib/colab-check';
+import { jobStageRows } from './lib/job-stage-rows';
+import { formatDuration } from './lib/job-history';
+import { formatInstanceTime } from './lib/instance-time';
 import styles from './gpu.module.css';
 
 const tabs = ['创作', '任务', '作品', '算力'] as const;
@@ -1001,7 +1004,7 @@ export default function App() {
             <dl className={styles.kv}>
               <dt>状态</dt><dd>{readableState(detail.state)}</dd>
               <dt>运行方式</dt><dd>{detail.provider === 'mock' ? '离线模拟' : detail.provider === 'colab' ? 'Colab GPU' : shown(detail.provider)}</dd>
-              <dt>创建时间</dt><dd>{String(detail.created_at || '未知')}</dd>
+              <dt>创建时间</dt><dd>{formatInstanceTime(detail.created_at)}</dd>
             </dl>
             {Array.isArray(detail.attempts) && <details className="foldable" open>
               <summary>执行记录</summary>
@@ -1015,7 +1018,17 @@ export default function App() {
             {detail.timings ? (
               <details className="foldable">
                 <summary>各阶段耗时</summary>
-                <div className="foldContent"><pre className={styles.diagnostics}>{JSON.stringify(detail.timings, null, 2)}</pre></div>
+                <div className="foldContent">
+                  <dl className={styles.kv}>
+                    {jobStageRows(detail.timings).map((stage) => (
+                      <div key={stage.key} style={{ display: 'contents' }}>
+                        <dt>{stage.label}</dt><dd>{formatDuration(stage.seconds)}</dd>
+                      </div>
+                    ))}
+                  </dl>
+                  {!terminalStates.has(detail.state || '') && <p className="muted small">当前阶段：{shown(detail.stage)} · 进行中，耗时尚未结算</p>}
+                  <p className="muted small">各阶段独立计时，可能存在重叠，不代表总用时。</p>
+                </div>
               </details>
             ) : null}
             {detail.resolved_params ? (

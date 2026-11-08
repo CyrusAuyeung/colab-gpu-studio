@@ -87,8 +87,12 @@ def test_activation_reflects_evidence_already_on_record():
     )
     data = body(review_routes.workflow_activation(row["id"], request(), user=OWNER, st=store))
 
-    assert all(step["done"] for step in data["steps"])
-    assert data["done"] is True
+    # Historical flags alone cannot attest the current artifact.
+    steps = {step['key']: step for step in data['steps']}
+    assert steps['real_smoke']['done'] is False
+    assert steps['accept_smoke']['done'] is False
+    # Published is an existing deployment state; evidence steps remain invalid.
+    assert data["done"] is False
     assert data["model"]["enabled"] is True
 
 
