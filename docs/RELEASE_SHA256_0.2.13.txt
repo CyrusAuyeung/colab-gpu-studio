@@ -1,0 +1,5 @@
+c5035dedc11461cb21e61880d27ae91cb48c8752ff06f660adcf1ab85df1cdde  Colab-GPU-Studio-v0.2.13-android-termux.zip
+15a1c92954e82cb514630fca37b49ac705fe762317ad6c3fc7cf9d24c52fabe5  Colab-GPU-Studio-v0.2.13-linux-x86_64.tar.gz
+79235a5fba8ea0c6d41a986335447336069fd74080b7f0e6e94ce172a7442905  Colab-GPU-Studio-v0.2.13-macos-arm64.tar.gz
+11079eeaa77604ce7c4918cf5f34275e24a1fd1224aa77bb9f03ca4da438ebf3  Colab-GPU-Studio-v0.2.13-macos-x86_64.tar.gz
+a273c0d9f8cfbb156be358c93d5fe095f06abde84d6dc1df1cead82ca1f53a39  Colab-GPU-Studio-v0.2.13-windows-x86_64.zip
