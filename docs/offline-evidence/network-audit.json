@@ -1,8 +1,0 @@
-{
-  "real_runtime_create_count": 0,
-  "real_runtime_delete_count": 0,
-  "real_mcp_call_count": 0,
-  "real_colab_oauth_call_count": 0,
-  "blocked_attempts": [],
-  "test_exit_status": 0
-}
