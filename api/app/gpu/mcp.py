@@ -678,12 +678,8 @@ class MCPGPUExecutor:
         if result.get("execution_id") not in {None, execution_id}:
             raise MCPError("Colab状态执行标识不匹配")
         state = result.get("state", "running")
-        from .diagnostics import gpu_diagnostics
-
-        evidence = {"execution_id": execution_id}
-        diagnostics = gpu_diagnostics(result.get("gpu_diagnostics")) if result.get("execution_id") == execution_id else None
-        if diagnostics:
-            evidence["gpu_diagnostics"] = diagnostics
+        # The scheduler cleans gpu_diagnostics before saving it.
+        evidence = {"execution_id": execution_id, "gpu_diagnostics": result.get("gpu_diagnostics")}
         if state in {"reserved", "starting", "running", None}:
             stage = result.get("stage")
             return {

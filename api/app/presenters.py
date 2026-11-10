@@ -64,14 +64,12 @@ def public_job(job):
     result["mock"] = job.get("provider") == "mock"
     result["workflow_smoke"] = job.get("workflow_smoke") is True or (job.get("snapshot") or {}).get("workflow_smoke") is True
     result["resolved_params"] = (job.get("snapshot") or {}).get("resolved_params", {})
-    requested = job.get("requested_spec") or (job.get("execution_policy") or {}).get("requested_spec")
-    if isinstance(requested, dict) and isinstance(requested.get("key"), dict):
-        requested = requested["key"]
+    # The requested Colab spec is shown separately from the GPU the worker actually measured.
+    requested = (job.get("requested_spec") or (job.get("execution_policy") or {}).get("requested_spec")
+                 or ((job.get("snapshot") or {}).get("manifest") or {}).get("compute_spec"))
     if isinstance(requested, dict):
-        result["runtime_spec_requested"] = {
-            key: value for key, value in requested.items()
-            if key in {"variant", "accelerator", "shape"} and isinstance(value, str) and len(value) <= 80
-        }
+        requested = requested.get("key", requested)
+        result["runtime_spec_requested"] = {k: requested[k] for k in ("variant", "accelerator", "shape") if k in requested}
     return result
 
 

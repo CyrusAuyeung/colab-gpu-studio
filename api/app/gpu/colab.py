@@ -21,11 +21,11 @@ class ColabError(GoogleError):
 class ColabAllocationError(ColabError):
     def __init__(self, code, reason):
         self.reason = reason
+        # Only the numeric code is shown; Google's own text may carry private data.
         if reason == "NO_RUNTIMES":
             message = "Colab 暂时无法分配运行时（NO_RUNTIMES）；请稍后重试"
         else:
-            suffix = f"，reason {reason}" if reason else ""
-            message = f"Colab 分配 Operation 失败（code {code}{suffix}）"
+            message = f"Colab 分配 Operation 失败（code {code}）"
         super().__init__(message)
 
 
@@ -68,12 +68,6 @@ class GoogleColabProvider:
         self._owns_client = client is None
         self.google = google or GoogleService(store, owner_id, account_id=account_id, client=self.client)
         self.base_url = base_url.rstrip("/")
-
-    @classmethod
-    def from_environment(cls, store=None, owner_id=None, **kwargs):
-        if store is None or not owner_id:
-            raise ColabError("Colab 需要已认证用户及持久化 Repository")
-        return cls(store, owner_id, **kwargs)
 
     def _request(self, method, path, *, params=None, json=None):
         token = self.google.access_token("colab")
@@ -292,30 +286,24 @@ class GoogleColabProvider:
 
     @staticmethod
     def _operation_failure(operation):
-        error = operation.get("error") or {}
+        """Summarise a failed allocation Operation by its code and ErrorInfo reason only.
+
+        Google's message and metadata may contain credentials or notebook data.
+        """
+        error = operation.get("error")
         if not error:
             return {}
-        reason = None
-        for detail in error.get("details") or []:
-            if not isinstance(detail, dict) or detail.get("@type") != "type.googleapis.com/google.rpc.ErrorInfo":
-                continue
-            candidate = detail.get("reason")
-            if detail.get("domain") == "colaboratory.googleapis.com" and isinstance(candidate, str) and re.fullmatch(r"[A-Z][A-Z0-9_]{0,63}", candidate):
-                reason = candidate
-                break
-        code = error.get("code")
+        reason = next((d.get("reason") for d in error.get("details") or []
+                       if d.get("@type") == "type.googleapis.com/google.rpc.ErrorInfo"), None)
         return {"allocation_failed": True,
-                "allocation_error_code": code if isinstance(code, int) else "unknown",
+                "allocation_error_code": error.get("code", "unknown"),
                 "allocation_failure_reason": reason}
 
     @staticmethod
     def _raise_operation_error(operation):
         failure = GoogleColabProvider._operation_failure(operation)
         if failure:
-            code = failure["allocation_error_code"]
-            reason = failure["allocation_failure_reason"]
-            # Raw messages and metadata can contain credentials or notebook data.
-            raise ColabAllocationError(code, reason)
+            raise ColabAllocationError(failure["allocation_error_code"], failure["allocation_failure_reason"])
 
     def _create_tunnel(self, lease: dict, key: dict, request_uuid: uuid.UUID, request_id: str, runtime_id: str) -> dict:
         nbh = _uuid_to_web_safe_base64(request_uuid)
@@ -468,10 +456,10 @@ class GoogleColabProvider:
                 "version": "colab-cli-tunnel",
             }
         operation = self._operation(handle, lease)
+        if operation is not None and operation.get("done") is not True:
+            return {"ready": False, "deleted": False, "operation_pending": True}
+        # A failed Operation still needs the runtime GET: a runtime that exists must be cleaned up.
         failure = self._operation_failure(operation) if operation is not None else {}
-        if operation is not None:
-            if operation.get("done") is not True:
-                return {"ready": False, "deleted": False, "operation_pending": True}
         response = self._request("GET", "/v1beta/" + handle["runtime_name"])
         if response.status_code == 404:
             # No Operation + a previously attempted create whose response was lost is ambiguous.

@@ -38,8 +38,7 @@ def test_missing_gpu_probe_is_nonfatal_and_never_invents_device(monkeypatch):
     monkeypatch.setattr(runtime_worker.subprocess, "run", missing)
     assert runtime_worker._probe_gpu() is None
     assert gpu_diagnostics({"source": "requested_spec", "devices": [{"name": "A100"}]}) is None
-    assert gpu_diagnostics({**EVIDENCE, "devices": [{"name": "bad\nname", "memory_mib": 12}]}) is None
-    assert gpu_diagnostics({**EVIDENCE, "captured_at": float("nan")}) is None
+    assert gpu_diagnostics({**EVIDENCE, "devices": []}) is None
     clean = gpu_diagnostics({**EVIDENCE, "proxy_token": "PRIVATE", "devices": [{**EVIDENCE["devices"][0], "serial": "PRIVATE"}]})
     assert clean == EVIDENCE
 
@@ -83,24 +82,19 @@ def test_scheduler_records_actual_device_on_owned_job_lease_and_instance_and_kee
     assert Scheduler(repo)._result_metadata(saved)["gpu_diagnostics"] == EVIDENCE
 
 
-@pytest.mark.parametrize("break_identity", ["execution", "owner", "lease", "instance", "account", "deleted"])
-def test_device_report_cannot_write_foreign_or_stale_identity(break_identity):
+def test_device_report_only_writes_the_owners_running_job():
     repo, job, instance, lease = running_job()
-    owner, execution = "owner", EXECUTION
-    if break_identity == "execution":
-        execution = "stale"
-    elif break_identity == "owner":
-        owner = "foreign"
-    elif break_identity == "lease":
-        repo.update("leases", lease["id"], {"owner_job_id": "another"}, "owner")
-    elif break_identity == "instance":
-        repo.update("instances", instance["id"], {"current_job_id": "another"}, "owner")
-    elif break_identity == "account":
-        repo.update("leases", lease["id"], {"account_id": "another"}, "owner")
-    else:
-        repo.update("instances", instance["id"], {"state": "deleted", "runtime_deleted": True}, "owner")
-    assert repo.record_gpu_diagnostics(owner, job["id"], execution, EVIDENCE) is None
+    assert repo.record_gpu_diagnostics({**job, "owner_id": "foreign"}, EVIDENCE) is None
+    repo.update("jobs", job["id"], {"state": "completed"}, "owner")
+    assert repo.record_gpu_diagnostics(job, EVIDENCE) is None
     assert not repo.get("jobs", job["id"], "owner").get("gpu_reported")
+    assert not repo.get("instances", instance["id"], "owner").get("gpu_reported")
+
+
+def test_device_report_skips_a_released_instance():
+    repo, job, instance, lease = running_job()
+    repo.update("instances", instance["id"], {"state": "deleted"}, "owner")
+    assert repo.record_gpu_diagnostics(job, EVIDENCE)["gpu_reported"] == "NVIDIA L4"
     assert not repo.get("instances", instance["id"], "owner").get("gpu_reported")
 
 

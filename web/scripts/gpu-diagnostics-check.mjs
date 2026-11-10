@@ -26,7 +26,6 @@ const base = { id: 'test', project_id: 'example', provider: 'colab', state: 'com
   instance_id: 'instance', instance_state: 'deleted', runtime_deleted: true,
   runtime_spec_requested: { accelerator: 'L4' } };
 assert.equal(gpuLabel(base), '申请 GPU：L4（未实测）');
-assert.equal(gpuLabel({runtime_spec_requested: {key: {accelerator: 'L4'}}}), '申请 GPU：L4（未实测）');
 assert.equal(gpuLabel({ ...base, gpu_reported: 'NVIDIA A100-SXM4-40GB' }), '实测 GPU：NVIDIA A100-SXM4-40GB');
 assert.equal(gpuLabel({ provider: 'mock' }), '模拟 GPU');
 assert.equal(gpuLabel({ prep: true }), 'CPU 预热');

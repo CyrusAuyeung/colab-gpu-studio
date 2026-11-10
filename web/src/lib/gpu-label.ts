@@ -1,25 +1,21 @@
 type DeviceRecord = {
-  gpu_reported?: unknown;
-  runtime_spec_requested?: unknown;
-  provider?: unknown;
-  prep?: unknown;
+  gpu_reported?: string | null;
+  runtime_spec_requested?: { accelerator?: string; variant?: string } | null;
+  provider?: string | null;
+  prep?: boolean | null;
 };
 
+/** Measured GPU first; otherwise the requested spec, marked as not measured. */
 export function gpuLabel(value: DeviceRecord): string {
   if (value.provider === 'mock') return '模拟 GPU';
-  if (typeof value.gpu_reported === 'string' && value.gpu_reported.trim()) return `实测 GPU：${value.gpu_reported}`;
-  if (value.prep === true) return 'CPU 预热';
+  if (value.gpu_reported) return `实测 GPU：${value.gpu_reported}`;
+  if (value.prep) return 'CPU 预热';
   const spec = value.runtime_spec_requested;
-  if (spec && typeof spec === 'object' && !Array.isArray(spec)) {
-    const raw = spec as Record<string, unknown>;
-    const key = raw.key && typeof raw.key === 'object' && !Array.isArray(raw.key) ? raw.key : raw;
-    const { accelerator, variant } = key as Record<string, unknown>;
-    if (typeof accelerator === 'string' && accelerator && accelerator !== 'NONE') return `申请 GPU：${accelerator}（未实测）`;
-    if (variant === 'VARIANT_DEFAULT' || variant === 'VARIANT_CPU') return 'CPU';
-  }
+  if (spec?.accelerator && spec.accelerator !== 'NONE') return `申请 GPU：${spec.accelerator}（未实测）`;
+  if (spec?.variant === 'VARIANT_DEFAULT' || spec?.variant === 'VARIANT_CPU') return 'CPU';
   return 'GPU 未记录';
 }
 
-export function canRetainJobInstance(job: { instance_id?: unknown; instance_state?: unknown; runtime_deleted?: unknown }): boolean {
-  return Boolean(job.instance_id) && job.runtime_deleted !== true && ['ready', 'busy', 'retained_idle'].includes(String(job.instance_state || ''));
+export function canRetainJobInstance(job: { instance_id?: string | null; instance_state?: string | null; runtime_deleted?: boolean | null }): boolean {
+  return Boolean(job.instance_id) && !job.runtime_deleted && ['ready', 'busy', 'retained_idle'].includes(job.instance_state || '');
 }

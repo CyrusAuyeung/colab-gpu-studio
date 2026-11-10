@@ -201,8 +201,6 @@ def ensure_schema(store: Store) -> None:
 
 def retarget_handle(handle, job_id):
     """Return the runtime handle re-owned by job_id (providers check handle ownership against the lease owner)."""
-    if not isinstance(handle, dict):
-        return handle
     return {**handle, 'job_id': job_id, 'owner_job_id': job_id}
 
 
@@ -263,8 +261,6 @@ class Repository:
 
     def create(self, kind, owner_id, data, project_id=None, record_id=None):
         model = self._model(kind)
-        if not isinstance(data, Mapping):
-            raise ValueError("GPU记录data必须是对象")  # noqa: TRY004
         payload = copy.deepcopy(dict(data))
         rid = record_id or str(uuid.uuid4())
         effective_project = project_id if project_id is not None else payload.get("project_id")
@@ -337,54 +333,33 @@ class Repository:
                 stmt = stmt.where(model.project_id == project_id)
             return [self._row(row) for row in session.scalars(stmt).all()]
 
-    def record_gpu_diagnostics(self, owner_id, job_id, execution_id, diagnostics):
-        """Persist device evidence only for the currently owned execution and lease."""
+    def record_gpu_diagnostics(self, job, diagnostics):
+        """Save worker-measured devices on the running job, its lease and instance."""
         from .diagnostics import gpu_diagnostics
 
         clean = gpu_diagnostics(diagnostics)
         if clean is None:
             return None
+        patch = {"gpu_diagnostics": clean, "gpu_reported": ", ".join(d["name"] for d in clean["devices"])}
+        owner_id = job["owner_id"]
         with self.store.db_lock(), self.store.Session.begin() as session:
-            job = session.scalar(select(GpuJobRow).where(
-                GpuJobRow.id == job_id, GpuJobRow.owner_id == owner_id).with_for_update())
-            data = (job.data or {}) if job else {}
-            if not job or job.state != "running" or not execution_id or data.get("execution_id") != execution_id:
+            row = session.get(GpuJobRow, job["id"])
+            if row is None or row.owner_id != owner_id or row.state != "running":
                 return None
-            lease = session.scalar(select(GpuLeaseRow).where(
-                GpuLeaseRow.id == data.get("lease_id"), GpuLeaseRow.owner_id == owner_id).with_for_update())
-            lease_data = (lease.data or {}) if lease else {}
-            if (not lease or lease_data.get("owner_job_id") != job_id
-                    or lease.state not in {"active", "running"}
-                    or (lease.account_id or lease_data.get("account_id")) != (job.account_id or data.get("account_id"))):
-                return None
-            rows = [job, lease]
-            instance_id = job.instance_id or data.get("instance_id")
-            if (lease.instance_id or lease_data.get("instance_id")) != instance_id:
-                return None
-            if instance_id:
-                instance = session.scalar(select(GpuInstanceRow).where(
-                    GpuInstanceRow.id == instance_id, GpuInstanceRow.owner_id == owner_id).with_for_update())
-                info = (instance.data or {}) if instance else {}
-                if (not instance or (instance.current_job_id or info.get("current_job_id")) != job_id
-                        or info.get("lease_id") != lease.id
-                        or (instance.account_id or info.get("account_id")) != (job.account_id or data.get("account_id"))
-                        or info.get("runtime_deleted") or instance.state in {"deleted", "releasing", "quarantined"}):
-                    return None
-                rows.append(instance)
-            patch = {"gpu_diagnostics": clean, "gpu_reported": ", ".join(d["name"] for d in clean["devices"])}
-            for row in rows:
-                if all((row.data or {}).get(key) == value for key, value in patch.items()):
-                    continue
-                row.data = {**(row.data or {}), **copy.deepcopy(patch)}
-                row.version += 1
-                row.updated_at = utcnow()
+            rows = [row]
+            for model, key in ((GpuLeaseRow, "lease_id"), (GpuInstanceRow, "instance_id")):
+                related = session.get(model, job.get(key)) if job.get(key) else None
+                if related is not None and related.owner_id == owner_id and related.state != "deleted":
+                    rows.append(related)
+            for item in rows:
+                item.data = {**(item.data or {}), **copy.deepcopy(patch)}
+                item.version += 1
+                item.updated_at = utcnow()
             session.flush()
-            return self._row(job)
+            return self._row(row)
 
     def update(self, kind, id, patch, owner_id=None):
         model = self._model(kind)
-        if not isinstance(patch, Mapping):
-            raise ValueError("patch必须是对象")  # noqa: TRY004
         with self.store.db_lock(), self.store.Session.begin() as session:
             stmt = select(model).where(model.id == id)
             if owner_id is not None:
@@ -424,10 +399,6 @@ class Repository:
             return self._row(row)
 
     def create_job(self, owner_id, body, idempotency_key, *, admitted=None):
-        if not isinstance(body, Mapping):
-            raise ValueError("job body必须是对象")  # noqa: TRY004
-        if not isinstance(idempotency_key, str) or not idempotency_key:
-            raise ValueError("idempotency_key必填")
         raw = copy.deepcopy(dict(body))
         body_hash = digest(raw)
         for attempt in range(8):

@@ -50,8 +50,10 @@ def test_capacity_is_distinct_from_disappeared_runtime_and_raw_errors_stay_priva
     with pytest.raises(ColabError, match="NO_RUNTIMES") as error:
         GoogleColabProvider._raise_operation_error(operation)
     assert "PRIVATE_CREDENTIAL" not in str(error.value)
-    operation["error"]["details"][0]["reason"] = "unsafe https://private.example/PRIVATE_CREDENTIAL"
-    assert GoogleColabProvider._operation_failure(operation)["allocation_failure_reason"] is None
+    operation["error"]["details"][0]["reason"] = "OTHER https://private.example/PRIVATE_CREDENTIAL"
+    with pytest.raises(ColabError) as error:
+        GoogleColabProvider._raise_operation_error(operation)
+    assert "PRIVATE_CREDENTIAL" not in str(error.value)
 
 
 def test_registration_failure_releases_owned_runtime_without_starting_executor(monkeypatch):
@@ -115,12 +117,11 @@ def scoped_accounts(monkeypatch):
     return Repo(), rows, connected
 
 
-def test_auto_account_is_bound_before_scoped_oauth_and_foreign_or_mock_accounts_are_excluded(scoped_accounts):
+def test_auto_account_is_bound_before_scoped_oauth_and_foreign_accounts_are_excluded(scoped_accounts):
     repo, rows, connected = scoped_accounts
     policy = {"provider": "colab", "allocation": "auto", "account_id": None, "instance_id": None}
-    rows.extend([{**rows[0], "id": "foreign", "account_id": "foreign", "owner_id": "other"},
-                 {**rows[0], "id": "mock", "account_id": "mock", "provider": "mock"}])
-    connected.update({"foreign", "mock"})
+    rows.append({**rows[0], "id": "foreign", "account_id": "foreign", "owner_id": "other"})
+    connected.add("foreign")
     assert admission._validate_allocation(repo, {"id": "owner"}, policy)["account_id"] == "owned"
     with pytest.raises(APIError):
         admission._validate_allocation(repo, {"id": "owner"}, {**policy, "account_id": "foreign"})

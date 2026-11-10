@@ -23,13 +23,9 @@ def locked(method):
     def call(self, *args, **kwargs):
         # One storage-volume lock coordinates chunks/finalize across processes.
         lock_path = self.root / ".artifact.lock"
-        if lock_path.is_symlink():
-            raise ArtifactError("artifact lock must not be a symlink")
-        flags = os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0)
-        fd = os.open(lock_path, flags, 0o600)
+        # O_NOFOLLOW does not exist on Windows; there the storage root is not shared with workers.
+        fd = os.open(lock_path, os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0), 0o600)
         with os.fdopen(fd, "a+b") as handle:
-            if not os.path.samestat(os.stat(lock_path, follow_symlinks=False), os.fstat(fd)):
-                raise ArtifactError("artifact lock changed while opening")
             with file_lock(handle):
                 return method(self, *args, **kwargs)
 

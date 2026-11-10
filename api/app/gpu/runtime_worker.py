@@ -94,13 +94,12 @@ def _atomic_json(path: Path, value: Any) -> None:
 
 
 def _status(root: Path, state: str, **fields: Any) -> None:
-    # Stage updates must retain hardware evidence until the coordinator has polled it.
-    try:
-        previous = json.loads((root / "status.json").read_text(encoding="utf-8"))
-        if isinstance(previous.get("gpu_diagnostics"), dict):
-            fields.setdefault("gpu_diagnostics", previous["gpu_diagnostics"])
-    except (OSError, ValueError, AttributeError):
-        pass
+    # Later stage updates keep the measured GPU so the coordinator can still poll it.
+    path = root / "status.json"
+    if "gpu_diagnostics" not in fields and path.exists():
+        previous = json.loads(path.read_text(encoding="utf-8")).get("gpu_diagnostics")
+        if previous:
+            fields["gpu_diagnostics"] = previous
     _atomic_json(root / "status.json", {"state": state, "updated_at": time.time(), **fields})
 
 
@@ -111,22 +110,14 @@ def _probe_gpu() -> dict | None:
             ["nvidia-smi", "--query-gpu=name,memory.total", "--format=csv,noheader,nounits"],
             capture_output=True, text=True, check=True, timeout=10,
         )
-        if len(result.stdout) > 4096:
-            return None
-        devices = []
-        for row in csv.reader(result.stdout.splitlines()):
-            if len(row) != 2:
-                return None
-            name, memory = row[0].strip(), int(row[1].strip())
-            if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9 ._()+/-]{0,119}", name) or not 0 < memory <= 10_000_000:
-                return None
-            devices.append({"name": name, "memory_mib": memory})
-        if not 1 <= len(devices) <= 8:
-            return None
-        return {"source": "runtime_nvidia_smi", "captured_at": time.time(), "devices": devices}
+        devices = [
+            {"name": name.strip(), "memory_mib": int(memory)}
+            for name, memory in csv.reader(result.stdout.splitlines())
+        ]
     except (OSError, ValueError, subprocess.SubprocessError):
-        # Device reporting must never prevent generation or cleanup.
+        # Device reporting is informational and must never stop generation.
         return None
+    return {"source": "runtime_nvidia_smi", "captured_at": time.time(), "devices": devices} if devices else None
 
 
 def _instance_service_name(instance_id: str) -> str:
