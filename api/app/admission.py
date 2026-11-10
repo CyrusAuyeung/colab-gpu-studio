@@ -94,6 +94,23 @@ def _validate_allocation(repo, user, policy: dict) -> dict:
             accounts = []
         if accounts and not any(_account_is_usable(item) for item in accounts):
             raise APIError("ACCOUNT_UNAVAILABLE", "没有允许分配且已授权的 Google 账号", 409)
+        connected = []
+        for item in accounts:
+            account_id = item.get("account_id") or item.get("id")
+            if (not account_id or str(account_id).startswith("mock-")
+                    or item.get("provider") not in {None, "colab", "google"}
+                    or not _account_is_usable(item)):
+                continue
+            if _google_status(repo, user["id"], account_id).get("colab", {}).get("connected") is True:
+                connected.append(account_id)
+        # Freeze the only connected identity before checking its scoped OAuth
+        # credentials. Multi-account routing keeps its existing selection path.
+        if len(connected) == 1:
+            selected = _resource(repo, "accounts", connected[0], user,
+                                 "ACCOUNT_NOT_FOUND", "Google 账号不存在或不属于当前用户")
+            if not _account_is_usable(selected):
+                raise APIError("ACCOUNT_UNAVAILABLE", "Google 账号已停用或不允许自动分配", 409)
+            checked["account_id"] = connected[0]
     return checked
 
 

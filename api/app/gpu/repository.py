@@ -12,7 +12,7 @@ from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app import db as db_module
-from app.db import Base, CommonMixin, Store, utcnow
+from app.db import Base, CommonMixin, Store, utc_isoformat, utcnow
 
 from .manifest import digest
 
@@ -235,8 +235,8 @@ class Repository:
             "id": row.id,
             "owner_id": row.owner_id,
             "project_id": row.project_id,
-            "created_at": row.created_at.isoformat() if row.created_at else None,
-            "updated_at": row.updated_at.isoformat() if row.updated_at else None,
+            "created_at": utc_isoformat(row.created_at),
+            "updated_at": utc_isoformat(row.updated_at),
         }
         result.update({k: copy.deepcopy(v) for k, v in (row.data or {}).items() if k not in reserved})
         # v0.2 stores identity in typed columns as well as JSON.  Old rows may
@@ -336,6 +336,50 @@ class Repository:
             if project_id is not None:
                 stmt = stmt.where(model.project_id == project_id)
             return [self._row(row) for row in session.scalars(stmt).all()]
+
+    def record_gpu_diagnostics(self, owner_id, job_id, execution_id, diagnostics):
+        """Persist device evidence only for the currently owned execution and lease."""
+        from .diagnostics import gpu_diagnostics
+
+        clean = gpu_diagnostics(diagnostics)
+        if clean is None:
+            return None
+        with self.store.db_lock(), self.store.Session.begin() as session:
+            job = session.scalar(select(GpuJobRow).where(
+                GpuJobRow.id == job_id, GpuJobRow.owner_id == owner_id).with_for_update())
+            data = (job.data or {}) if job else {}
+            if not job or job.state != "running" or not execution_id or data.get("execution_id") != execution_id:
+                return None
+            lease = session.scalar(select(GpuLeaseRow).where(
+                GpuLeaseRow.id == data.get("lease_id"), GpuLeaseRow.owner_id == owner_id).with_for_update())
+            lease_data = (lease.data or {}) if lease else {}
+            if (not lease or lease_data.get("owner_job_id") != job_id
+                    or lease.state not in {"active", "running"}
+                    or (lease.account_id or lease_data.get("account_id")) != (job.account_id or data.get("account_id"))):
+                return None
+            rows = [job, lease]
+            instance_id = job.instance_id or data.get("instance_id")
+            if (lease.instance_id or lease_data.get("instance_id")) != instance_id:
+                return None
+            if instance_id:
+                instance = session.scalar(select(GpuInstanceRow).where(
+                    GpuInstanceRow.id == instance_id, GpuInstanceRow.owner_id == owner_id).with_for_update())
+                info = (instance.data or {}) if instance else {}
+                if (not instance or (instance.current_job_id or info.get("current_job_id")) != job_id
+                        or info.get("lease_id") != lease.id
+                        or (instance.account_id or info.get("account_id")) != (job.account_id or data.get("account_id"))
+                        or info.get("runtime_deleted") or instance.state in {"deleted", "releasing", "quarantined"}):
+                    return None
+                rows.append(instance)
+            patch = {"gpu_diagnostics": clean, "gpu_reported": ", ".join(d["name"] for d in clean["devices"])}
+            for row in rows:
+                if all((row.data or {}).get(key) == value for key, value in patch.items()):
+                    continue
+                row.data = {**(row.data or {}), **copy.deepcopy(patch)}
+                row.version += 1
+                row.updated_at = utcnow()
+            session.flush()
+            return self._row(job)
 
     def update(self, kind, id, patch, owner_id=None):
         model = self._model(kind)
@@ -1171,6 +1215,7 @@ class Repository:
                 'requested_instance_id',
                 'account_alias_snapshot','selection_reason','allocation_key','attempt_id','runtime_id','request_id',
                 'stage','worker_timings','output_bytes','started_at','finished_at','poll_retry_count','poll_retry_at',
+                'gpu_reported','gpu_diagnostics',
             }
             for k in transient:
                 data.pop(k,None)

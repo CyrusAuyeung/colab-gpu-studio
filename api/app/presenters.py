@@ -64,6 +64,12 @@ def public_job(job):
     result["mock"] = job.get("provider") == "mock"
     result["workflow_smoke"] = job.get("workflow_smoke") is True or (job.get("snapshot") or {}).get("workflow_smoke") is True
     result["resolved_params"] = (job.get("snapshot") or {}).get("resolved_params", {})
+    requested = job.get("requested_spec") or (job.get("execution_policy") or {}).get("requested_spec")
+    if isinstance(requested, dict):
+        result["runtime_spec_requested"] = {
+            key: value for key, value in requested.items()
+            if key in {"variant", "accelerator", "shape"} and isinstance(value, str) and len(value) <= 80
+        }
     return result
 
 

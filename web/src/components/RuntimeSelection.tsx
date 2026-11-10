@@ -2,6 +2,7 @@ import type { Provider } from '../lib/gpu-api';
 import { instanceIdentity, instanceMachineLabel, instanceReusable } from '../lib/instance-submission';
 import type { GpuAccount, GpuInstance } from './AccountDirectory';
 import { formatInstanceTime } from '../lib/instance-time';
+import { gpuLabel } from '../lib/gpu-label';
 import styles from './v020.module.css';
 
 export type RuntimeLifecycle = 'save' | 'batch' | 'smart' | 'retain';
@@ -43,7 +44,7 @@ function isAccountSelectable(account: GpuAccount): boolean {
 
 function instanceLabel(instance: GpuInstance): string {
   const cutoff = instance.hard_deadline_at || instance.idle_deadline_at;
-  return `${instance.instance_label || instance.label || instanceId(instance)} · ${instance.gpu_reported || 'GPU 未确认'} · ${instance.state || '状态未知'}${cutoff ? ` · 截止 ${formatInstanceTime(cutoff)}` : ''}`;
+  return `${instance.instance_label || instance.label || instanceId(instance)} · ${gpuLabel(instance)} · ${instance.state || '状态未知'}${cutoff ? ` · 截止 ${formatInstanceTime(cutoff)}` : ''}`;
 }
 
 export function RuntimeSelection({ value, accounts, instances, provider, onChange }: RuntimeSelectionProps) {

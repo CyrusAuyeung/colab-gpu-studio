@@ -1,0 +1,49 @@
+name: Offline regressions
+
+on:
+  pull_request:
+  push:
+    branches: [main, 'fix/**']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  regressions:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    env:
+      PYTHONUTF8: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: python -m pip install -e ".[test]"
+      - name: Full offline suite on Linux
+        if: runner.os == 'Linux'
+        run: python -m pytest -q
+      - name: Windows coordinator regressions
+        if: runner.os == 'Windows'
+        run: >-
+          python -m pytest -q tests/gpu/test_deployment_regressions.py
+          tests/gpu/test_gpu_diagnostics.py tests/gpu/test_portable_coordinator.py
+          tests/gpu/test_scheduler.py tests/gpu/test_v020_scheduler.py
+          tests/gpu/test_colab_operations_safety.py tests/gpu/test_mcp_executor.py
+          tests/gpu/test_drive_account_binding.py tests/gpu/test_artifact_streaming.py
+          tests/gpu/test_admission_lock.py
+      - run: npm ci
+        working-directory: web
+      - run: npm run build
+        working-directory: web
+      - run: npm run test:contract
+        working-directory: web
