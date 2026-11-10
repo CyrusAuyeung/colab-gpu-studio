@@ -65,6 +65,8 @@ def public_job(job):
     result["workflow_smoke"] = job.get("workflow_smoke") is True or (job.get("snapshot") or {}).get("workflow_smoke") is True
     result["resolved_params"] = (job.get("snapshot") or {}).get("resolved_params", {})
     requested = job.get("requested_spec") or (job.get("execution_policy") or {}).get("requested_spec")
+    if isinstance(requested, dict) and isinstance(requested.get("key"), dict):
+        requested = requested["key"]
     if isinstance(requested, dict):
         result["runtime_spec_requested"] = {
             key: value for key, value in requested.items()

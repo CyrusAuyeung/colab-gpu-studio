@@ -11,7 +11,9 @@ export function gpuLabel(value: DeviceRecord): string {
   if (value.prep === true) return 'CPU 预热';
   const spec = value.runtime_spec_requested;
   if (spec && typeof spec === 'object' && !Array.isArray(spec)) {
-    const { accelerator, variant } = spec as Record<string, unknown>;
+    const raw = spec as Record<string, unknown>;
+    const key = raw.key && typeof raw.key === 'object' && !Array.isArray(raw.key) ? raw.key : raw;
+    const { accelerator, variant } = key as Record<string, unknown>;
     if (typeof accelerator === 'string' && accelerator && accelerator !== 'NONE') return `申请 GPU：${accelerator}（未实测）`;
     if (variant === 'VARIANT_DEFAULT' || variant === 'VARIANT_CPU') return 'CPU';
   }

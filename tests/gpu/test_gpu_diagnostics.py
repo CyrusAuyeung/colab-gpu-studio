@@ -104,8 +104,10 @@ def test_device_report_cannot_write_foreign_or_stale_identity(break_identity):
     assert not repo.get("instances", instance["id"], "owner").get("gpu_reported")
 
 
-def test_public_requested_spec_is_allowlisted_without_fabricating_gpu():
-    result = public_job({"id": "old", "requested_spec": {"accelerator": "L4", "proxy_token": "PRIVATE"}})
+@pytest.mark.parametrize("nested", [False, True])
+def test_public_requested_spec_is_allowlisted_without_fabricating_gpu(nested):
+    spec = {"accelerator": "L4", "proxy_token": "PRIVATE"}
+    result = public_job({"id": "old", "requested_spec": {"key": spec} if nested else spec})
     assert result["runtime_spec_requested"] == {"accelerator": "L4"}
     assert not result.get("gpu_reported") and "PRIVATE" not in json.dumps(result)
 
