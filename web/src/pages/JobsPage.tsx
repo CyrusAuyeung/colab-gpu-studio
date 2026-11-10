@@ -4,6 +4,7 @@ import { type GpuJob } from '../lib/gpu-api';
 import styles from '../gpu.module.css';
 import { formatDateTime, jobSize, progressPercent, readableState, terminalStates } from '../lib/ui-helpers';
 import { jobStageLabel } from '../lib/job-stage-rows';
+import { canRetainJobInstance, gpuLabel } from '../lib/gpu-label';
 
 const RUNNING = ['running', 'uploading', 'saving', 'active', 'started', 'creating', 'reserved', 'validating', 'cleanup_pending'];
 const WAITING = ['queued', 'pending', 'preparing'];
@@ -113,10 +114,11 @@ export function TasksPanel({
             const machineInfo = [
               accountSnapshot ? `账号 ${accountSnapshot}` : '',
               String(job.instance_label || instanceId.slice(0, 8)),
-              String(job.gpu_reported || 'GPU 未确认'),
-              readableState(String(job.instance_state || '未知')),
+              gpuLabel(job),
+              instanceId ? readableState(String(job.instance_state || '未知')) : terminalStates.has(s) ? '未分配机器' : '等待分配机器',
             ].filter(Boolean).join(' · ');
-            const retained = Boolean(job.retained_until || String(job.lifecycle || '') === 'retain');
+            const liveInstance = canRetainJobInstance(job);
+            const retained = liveInstance && Boolean(job.retained_until || job.instance_state === 'retained_idle');
 
             return (
               <article className={styles.jobCard} key={jobKey}>
@@ -134,8 +136,7 @@ export function TasksPanel({
                     </p>
                     <p className="muted small">创建于 {formatDateTime(job.created_at)}</p>
                     {instanceId ? <button type="button" className={styles.linkButton} onClick={() => onInstance?.(job)}>{machineInfo}</button>
-                      : accountSnapshot ? <p className="muted small">{machineInfo} · 等待分配机器</p>
-                      : <p className="muted small">等待分配机器</p>}
+                      : <p className="muted small">{machineInfo}</p>}
                   </div>
                 </div>
 
@@ -152,7 +153,7 @@ export function TasksPanel({
 
                 <div className={styles.cardActions}>
                   <button className="button small" style={{ flex: 1 }} type="button" onClick={() => onDetail(job)}>查看详情</button>
-                  {instanceId && !retained && onRetain && <button className="button secondary small" type="button" onClick={() => onRetain(job)}>保留这台机器</button>}
+                  {liveInstance && !retained && onRetain && <button className="button secondary small" type="button" onClick={() => onRetain(job)}>保留这台机器</button>}
                   {retained && <span className="pill">已保留{job.retained_until ? `至 ${formatDateTime(String(job.retained_until))}` : ''}</span>}
                   {!terminalStates.has(s) ? (
                     <button className="button secondary small" style={{ flex: 1 }} type="button" onClick={() => onCancel(job.id)}>

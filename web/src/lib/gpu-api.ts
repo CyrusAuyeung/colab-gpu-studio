@@ -73,6 +73,7 @@ export interface GpuJob {
   instance_label?: string | null;
   instance_state?: string | null;
   gpu_reported?: string | null;
+  runtime_spec_requested?: { accelerator?: string; variant?: string; shape?: string } | null;
   retained_until?: string | null;
   runtime_deleted?: boolean | null;
   stage?: string | null;
