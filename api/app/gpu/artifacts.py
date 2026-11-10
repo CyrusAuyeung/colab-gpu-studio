@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
-import fcntl
 import hashlib
 import json
 import os
 import re
 from functools import wraps
 from pathlib import Path
+
+from ..filelocks import file_lock
 
 _ID = re.compile(r"^[a-f0-9]{32}$")
 
@@ -22,13 +23,15 @@ def locked(method):
     def call(self, *args, **kwargs):
         # One storage-volume lock coordinates chunks/finalize across processes.
         lock_path = self.root / ".artifact.lock"
-        fd = os.open(lock_path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
-        with os.fdopen(fd, "a+") as handle:
-            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
-            try:
+        if lock_path.is_symlink():
+            raise ArtifactError("artifact lock must not be a symlink")
+        flags = os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0)
+        fd = os.open(lock_path, flags, 0o600)
+        with os.fdopen(fd, "a+b") as handle:
+            if not os.path.samestat(os.stat(lock_path, follow_symlinks=False), os.fstat(fd)):
+                raise ArtifactError("artifact lock changed while opening")
+            with file_lock(handle):
                 return method(self, *args, **kwargs)
-            finally:
-                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
     return call
 

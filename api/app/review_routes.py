@@ -791,6 +791,31 @@ def real_smoke(
     return _smoke_response(job, request, resumed=not created)
 
 
+def _prepare_account_ids(repo, owner_id, requested_account_id):
+    """Bind cache preparation to an owned compute account and its Drive account."""
+    from .gpu.accounts import AccountService
+
+    accounts = AccountService(repo, owner_id)
+    account_id = requested_account_id
+    if account_id is None:
+        choices = [row for row in accounts.list() if row.get("enabled", True)
+                   and row.get("allow_allocation")
+                   and row.get("authorization", {}).get("colab", {}).get("connected")]
+        if len(choices) != 1:
+            raise APIError("ACCOUNT_REQUIRED", "缓存准备需要明确选择Google账号", 422)
+        account_id = choices[0]["account_id"]
+    if not isinstance(account_id, str) or not account_id.strip():
+        raise APIError("ACCOUNT_INVALID", "account_id必须为非空字符串", 422)
+    account_id = account_id.strip()
+    _require_account(repo, owner_id, account_id)
+    if not GoogleService(repo, owner_id, account_id=account_id).status().get("colab", {}).get("connected"):
+        raise APIError("GOOGLE_NOT_CONNECTED", "所选账号尚未完成Colab OAuth授权")
+    drive_account_id = accounts.resolve_drive_account_id(account_id)
+    if not GoogleService(repo, owner_id, account_id=drive_account_id).status().get("drive", {}).get("connected"):
+        raise APIError("DRIVE_NOT_CONNECTED", "所选存储账号尚未完成Drive OAuth授权")
+    return account_id, drive_account_id
+
+
 @router.post("/workflows/{workflow_id}/prepare")
 def prepare_workflow(
     workflow_id: str, body: dict, request: Request, user=Depends(current_user), st=Depends(get_store)
@@ -805,8 +830,7 @@ def prepare_workflow(
     cfg = GpuConfig.from_env()
     if not cfg.real_enabled:
         raise APIError("REAL_GPU_DISABLED", "GPU_REAL_ENABLED尚未启用")
-    if not GoogleService(repo, user["id"]).status().get("colab", {}).get("connected"):
-        raise APIError("GOOGLE_NOT_CONNECTED", "请先完成个人Colab OAuth授权")
+    account_id, drive_account_id = _prepare_account_ids(repo, user["id"], body.get("account_id"))
     project_id = body.get("project_id")
     if not isinstance(project_id, str):
         raise APIError("VALIDATION_ERROR", "project_id必填")
@@ -816,8 +840,10 @@ def prepare_workflow(
         "model_id": row["model_id"],
         "workflow_key": row["workflow_key"],
         "workflow_version": row["workflow_version"],
+        "account_id": account_id,
+        "drive_account_id": drive_account_id,
     }
-    key = prep_idempotency_key(row.get("sha256") or workflow_id, _idempotency_key(request))
+    key = prep_idempotency_key(row.get("sha256") or workflow_id, account_id + ":" + _idempotency_key(request))
     with st.dispatch_lock() as acquired:
         if not acquired:
             raise APIError("SCHEDULER_BUSY", "调度正在同步，请稍后用相同幂等键重试", 503, True)

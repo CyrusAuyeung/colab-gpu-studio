@@ -116,7 +116,7 @@ class InstanceService:
         if value is None:
             return None
         if isinstance(value, datetime):
-            return value.isoformat()
+            return (value if value.tzinfo else value.replace(tzinfo=timezone.utc)).isoformat()
         return value
 
     def _dict(self, row) -> dict:

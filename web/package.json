@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "typecheck": "tsc -b --pretty false",
-    "test:contract": "node scripts/gpu-contract-check.mjs",
+    "test:contract": "node scripts/gpu-contract-check.mjs && node scripts/gpu-diagnostics-check.mjs",
     "preview": "vite preview"
   },
   "dependencies": {

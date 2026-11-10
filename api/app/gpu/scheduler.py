@@ -12,6 +12,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Callable
 
+from .colab import ColabAllocationError
 from .compute import (
     ComputeError,
     DisabledProvider,
@@ -1018,6 +1019,8 @@ class Scheduler:
             lease = self._ensure_lease(job)
         if job.get("lease_id") != lease["id"]:
             job = self._update("jobs", job["id"], {"lease_id": lease["id"]}, job.get("owner_id"))
+        if lease.get("state") in {"cleanup_pending", "releasing", "deleting", "quarantined", "deleted"}:
+            return self._begin_failure(job, "gpu_allocation_aborted", "GPU allocation entered cleanup before execution; retry after release")
         try:
             job, lease = self._bind_instance_lease(job, lease)
         except SchedulerError as exc:
@@ -1071,6 +1074,9 @@ class Scheduler:
             }
         except ProviderUnavailable as exc:
             return self._begin_failure(job, "gpu_provider_unavailable", self._safe_error(exc))
+        except ColabAllocationError as exc:
+            code = "gpu_capacity_unavailable" if exc.reason == "NO_RUNTIMES" else "gpu_allocation_failed"
+            return self._begin_failure(job, code, str(exc))
         except Exception:
             recovered = self._recover_unknown_create(job, lease, provider)
             if recovered == "cleaned":
@@ -1133,6 +1139,11 @@ class Scheduler:
             status = self._provider(job).inspect(self._lease_handle(lease))
         except Exception as exc:
             return self._begin_failure(job, "gpu_runtime_inspect_failed", self._safe_error(exc))
+        if status.get("allocation_failed"):
+            reason = status.get("allocation_failure_reason")
+            if reason == "NO_RUNTIMES":
+                return self._begin_failure(job, "gpu_capacity_unavailable", "Colab 暂时无法分配运行时（NO_RUNTIMES）；请稍后重试")
+            return self._begin_failure(job, "gpu_allocation_failed", "Colab 运行时分配失败；未开始模型执行")
         if status.get("deleted"):
             return self._begin_failure(job, "gpu_runtime_missing", "GPU runtime disappeared")
         if status.get("ready"):
@@ -1149,22 +1160,34 @@ class Scheduler:
             execution=self._get('executions',execution_id,job.get('owner_id'))
             if not execution or execution.get('state')!='starting':
                 return self._set_state(job, "running", "GPU execution recovered")
-        prepare=getattr(self.store,'prepare_execution',None)
-        if prepare:
-            job=prepare(job['id'],job['owner_id'],lease['id'],self.clock())
-            execution_id=job['execution_id']
-        else:
-            execution_id = str(uuid.uuid4())
-            job = self._update('jobs',job['id'],{'execution_id':execution_id},job.get('owner_id'))
-        if self._is_v020_job(job) and job.get("instance_id"):
-            execution = self._get("executions", execution_id, job.get("owner_id"))
-            if execution and execution.get("instance_id") != job["instance_id"]:
-                self._update(
-                    "executions",
-                    execution_id,
-                    {"instance_id": job["instance_id"], "account_id": job.get("account_id")},
-                    job.get("owner_id"),
-                )
+        try:
+            prepare=getattr(self.store,'prepare_execution',None)
+            if prepare:
+                job=prepare(job['id'],job['owner_id'],lease['id'],self.clock())
+                execution_id=job['execution_id']
+            else:
+                execution_id = str(uuid.uuid4())
+                job = self._update('jobs',job['id'],{'execution_id':execution_id},job.get('owner_id'))
+            if self._is_v020_job(job) and job.get("instance_id"):
+                execution = self._get("executions", execution_id, job.get("owner_id"))
+                if execution and execution.get("instance_id") != job["instance_id"]:
+                    self._update(
+                        "executions",
+                        execution_id,
+                        {"instance_id": job["instance_id"], "account_id": job.get("account_id")},
+                        job.get("owner_id"),
+                    )
+        except Exception as exc:
+            safe_registration_errors = {
+                "job is not ready to start", "lease does not belong to job", "job lease identity mismatch",
+                "lease is not active", "lease account mismatch", "lease instance mismatch",
+                "execution association mismatch", "execution association conflict",
+            }
+            message = f"Execution registration refused: {exc}" if isinstance(exc, ValueError) and str(exc) in safe_registration_errors else self._safe_error(exc)
+            if lease.get("owner_id") not in (None, job.get("owner_id")) or lease.get("owner_job_id") not in (None, job["id"]):
+                return self._set_state(job, "failed", "GPU execution identity was refused",
+                                       error_code="gpu_execution_prepare_failed", error_message=message)
+            return self._begin_failure(job, "gpu_execution_prepare_failed", message)
         try:
             # The Drive token is attached to an in-memory copy only; it is never persisted.
             executor_job = {
@@ -1239,6 +1262,14 @@ class Scheduler:
             job = self._set_state(job, 'running', 'GPU connection recovered', poll_retry_count=0, poll_retry_at=0)
         if result.get('execution_id') not in {None,job.get('execution_id')}:
             return self._begin_failure(job,'gpu_execution_id_mismatch','poll execution identity mismatch')
+        record_device = getattr(self.store, "record_gpu_diagnostics", None)
+        if callable(record_device) and result.get("execution_id") == job.get("execution_id"):
+            try:
+                measured = record_device(job["owner_id"], job["id"], job.get("execution_id"), result.get("gpu_diagnostics"))
+                if measured:
+                    job = measured
+            except Exception:  # noqa: BLE001 - optional diagnostics must not prevent generation or cleanup
+                logging.getLogger(__name__).warning("could not persist GPU diagnostics")
         state = result.get("state")
         timings = result.get("timings") if isinstance(result.get("timings"), dict) else None
         if state == "completed":
@@ -1326,6 +1357,8 @@ class Scheduler:
             "model_revision": snapshot.get("model_revision"),
             "resolved_params": snapshot.get("resolved_params", {}),
             "system_smoke": snapshot.get("system_smoke") is True,
+            "gpu_reported": job.get("gpu_reported"),
+            "gpu_diagnostics": job.get("gpu_diagnostics"),
         }
 
     def _write_local_metadata(self, job: dict, metadata: dict) -> dict | None:
@@ -1565,6 +1598,13 @@ class Scheduler:
             job.get("owner_id"),
         )
 
+    def _finish_cleanup(self, job: dict, state: str, message: str, **patch) -> dict:
+        if state in {"completed", "cancelled"} and job.get("error_code") in {
+            "gpu_cleanup_pending", "gpu_instance_completion_pending",
+        }:
+            patch.update(error_code=None, error_message=None)
+        return self._set_state(job, state, message, cleanup_next_epoch=0, **patch)
+
     def _cleanup(self, job: dict) -> dict:
         lease = self._lease(job)
         job = self._trusted_plugin_cleanup(job, lease)
@@ -1591,8 +1631,8 @@ class Scheduler:
                     job,
                     "cleanup_pending",
                     "GPU instance completion is pending",
-                    error_code="gpu_instance_completion_pending",
-                    error_message=str(exc),
+                    error_code=job.get("error_code") or "gpu_instance_completion_pending",
+                    error_message=job.get("error_message") or str(exc),
                 )
             if isinstance(instance, dict) and instance.get("state") == "retained_idle":
                 if lease:
@@ -1609,7 +1649,7 @@ class Scheduler:
                         {"state": "completed", "finished_at": self.clock()},
                         job.get("owner_id"),
                     )
-                return self._set_state(
+                return self._finish_cleanup(
                     job,
                     final_state,
                     "GPU cleanup completed; instance retained",
@@ -1631,10 +1671,10 @@ class Scheduler:
                     self._update('executions',job['execution_id'],{'state':'completed','finished_at':self.clock()},job['owner_id'])
                 return self._set_state(job,'completed','Mock outputs verified; idle lease retained')
         if not lease:
-            return self._set_state(job, final_state, "GPU cleanup completed")
+            return self._finish_cleanup(job, final_state, "GPU cleanup completed")
         if lease.get("state") == "deleted":
             self._record_usage(job, lease, self.clock())
-            return self._set_state(job, final_state, "GPU cleanup completed")
+            return self._finish_cleanup(job, final_state, "GPU cleanup completed")
         next_epoch = float(lease.get("cleanup_next_epoch") or 0)
         if self.clock() < next_epoch:
             return job
@@ -1695,7 +1735,7 @@ class Scheduler:
                 "GPU cleanup is pending",
                 cleanup_attempts=attempts,
                 cleanup_next_epoch=self.clock() + delay,
-                error_code="gpu_cleanup_pending",
+                error_code=job.get("error_code") or "gpu_cleanup_pending",
             )
         self._update(
             "leases",
@@ -1706,7 +1746,7 @@ class Scheduler:
             job.get("owner_id"),
         )
         self._record_usage(job, lease, self.clock())
-        return self._set_state(job, final_state, "GPU cleanup completed")
+        return self._finish_cleanup(job, final_state, "GPU cleanup completed")
 
     def _advance(self, job: dict) -> dict:
         state = job.get("state")
