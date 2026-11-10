@@ -1,6 +1,6 @@
 **简体中文** | [English](README.en.md)
 
-> 当前版本 0.2.10：修复网页已配置 OAuth 后，新增账号仍无法开始授权的问题。包含 Colab CLI 算力号接入、独立 Drive 绑定与 CU 对账更新。详见 [0.2.10 更新说明](docs/RELEASE_NOTES_0.2.10.md)；离线/Mock 验收记录见 [离线实施记录](docs/OFFLINE_IMPLEMENTATION.md)。
+> 当前版本 3.0.0：精简防御性代码，修复 #24（实际 GPU 上报、自动账号绑定、分配失败分类、Windows 文件锁）。详见 [3.0.0 更新说明](docs/RELEASE_NOTES_3.0.0.md)；离线/Mock 验收记录见 [离线实施记录](docs/OFFLINE_IMPLEMENTATION.md)。
 
 # Colab GPU Studio
 

@@ -1,6 +1,6 @@
 **English** | [简体中文](README.md)
 
-> Current version: 0.2.10. Fixes new-account authorization failing after OAuth application setup. Also includes Colab CLI compute accounts, independent Drive account binding, and CU reconciliation. See the [0.2.10 release notes](docs/RELEASE_NOTES_0.2.10.md) and [offline implementation notes](docs/OFFLINE_IMPLEMENTATION.md).
+> Current version: 3.0.0. Removes defensive boilerplate and fixes #24 (actual GPU reporting, automatic account binding, allocation failure classification, Windows file locks). See the [3.0.0 release notes](docs/RELEASE_NOTES_3.0.0.md) (Chinese) and [offline implementation notes](docs/OFFLINE_IMPLEMENTATION.md).
 
 # Colab GPU Studio
 
