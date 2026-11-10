@@ -10,8 +10,8 @@ The frontend is a React single-page app optimized for mobile touch controls, and
 
 ## Downloads and Online Demo
 
-- **Latest version**: [0.2.10 release](https://github.com/TizenryA/colab-gpu-studio/releases/tag/v0.2.10) (source + release notes).
-- **Prebuilt multi-platform bundles**: the [0.2.10 release assets](https://github.com/TizenryA/colab-gpu-studio/releases/tag/v0.2.10) ship Windows x86_64 / Linux x86_64 / macOS x64 / macOS arm64 / Android Termux packages. Desktop bundles include Python and dependencies; Termux installs its native dependencies online at first launch; checksums are in `SHA256SUMS.txt`.
+- **Latest version**: [3.0.0 release](https://github.com/TizenryA/colab-gpu-studio/releases/tag/v3.0.0) (source + release notes).
+- **Prebuilt multi-platform bundles**: the [3.0.0 release assets](https://github.com/TizenryA/colab-gpu-studio/releases/tag/v3.0.0) ship Windows x86_64 / Linux x86_64 / macOS x64 / macOS arm64 / Android Termux packages. Desktop bundles include Python and dependencies; Termux installs its native dependencies online at first launch; checksums are in `SHA256SUMS.txt`.
 - **Read-only UI demo**: [Open the Cloudflare Workers demo](https://gpu-colab-studio-demo.tizenry.tech). Public demo password: `demo-readonly`.
 - The demo uses the **original 0.1.31-dev.8 frontend** with a separate Mock data snapshot. It does not connect to the production site, Google, or a real GPU, and does not consume CU. Generation, uploads, edits, deletion, and authorization are unavailable; download and self-host the full version for complete functionality.
 - [Demo details and more screenshots](docs/DEMO.md). The screenshots below were captured in a real browser on the live demo site; they are not design mockups.
